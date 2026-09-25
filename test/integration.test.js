@@ -1706,10 +1706,25 @@ test('同一个大会话切到 1.05M 窗口的模型则允许（窗口差异决�
   }
 });
 
-test('上下文闸使用未命中 inputTokens，不误拦热缓存长上下文', async () => {
+test('回归：上下文闸必须用 input + cacheRead（对齐 pi-ai 的溢出判定）', async () => {
+  // 依据（逐字核对过 @earendil-works/pi-ai/dist/utils/overflow.js 的 Case 2）：
+  //   if (contextWindow && message.stopReason === "stop") {
+  //     const inputTokens = message.usage.input + message.usage.cacheRead;
+  //     if (inputTokens > contextWindow) return true;
+  //   }
+  // 即使服务端没报错，只要「输入总量 > 窗口」就判溢出。
+  //
+  // 曾经的错误修正：看到 in=57K + cache=552K 的一次请求"成功"，就改成只看 input。
+  // 那段"成功"实际是 DSH 的 compaction 在反复压缩重试（日志里 7 次
+  // compaction/start→end），最终仍以 CONTEXT_WINDOW_EXCEEDED 失败。
   const mod = await import('../lib/index.js');
-  const { estimatePrefixTokens, estimateUncachedTokens } = mod.__test__;
+  const { estimatePrefixTokens } = mod.__test__;
   const metrics = { lastStep: { inputTokens: 57682, cacheReadTokens: 552448 } };
-  assert.equal(estimatePrefixTokens(metrics), 610130, '成本闸仍看完整前缀规模');
-  assert.equal(estimateUncachedTokens(metrics), 57682, '上下文闸看未命中 input');
+  assert.equal(
+    estimatePrefixTokens(metrics),
+    610130,
+    '必须是 input + cacheRead：热缓存的长上下文同样会超过窗口',
+  );
+  assert.ok(estimatePrefixTokens(metrics) > 272000, '该样本必须被判为超过 272K 窗口');
+  assert.equal(mod.__test__.estimateUncachedTokens, undefined, '不得再保留"只看未命中 input"的实现');
 });

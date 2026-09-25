@@ -158,6 +158,41 @@ Tier B 的五道闸只算**缓存代价**，完全没有检查「目标模型装
 3. `lib/index.js`：`usedTokens` 取当前 prompt 规模（`metrics.lastStep.inputTokens + cacheReadTokens`，与快照里的 `estimatePrefixTokens` 同一口径）。
 4. `lib/config.js` + 设置页：`contextSafetyMargin`（默认 0.05）可调。
 
+### 关于「用哪个 token 数判定」（第二次更正，附源码依据）
+
+第一版实现用 `input + cacheRead`；随后我看到一次「in=57K + cache=552K」的请求
+似乎成功，就改成只用 `input`。**第二次修改是错的**，依据是 pi-ai 的
+`isContextOverflow` Case 2（逐字核对 `@earendil-works/pi-ai/dist/utils/overflow.js`）：
+
+```js
+if (contextWindow && message.stopReason === "stop") {
+    const inputTokens = message.usage.input + message.usage.cacheRead;
+    if (inputTokens > contextWindow) return true;
+}
+```
+
+即使服务端没报错，只要「输入总量 > 窗口」就判溢出。那段"成功"实际是 DSH 的
+compaction 在反复压缩重试（日志里连续 7 次 `compaction/start→end`），
+最终仍以 `CONTEXT_WINDOW_EXCEEDED` 失败。**我看了一个中间态的 usage 就下了结论。**
+
+现已改回 `input + cacheRead`，并用测试锁死（测试里直接写明该源码依据）。
+
+### 真正的解法：modelOverrides
+
+`openai-codex` 的 272K 只是 pi-ai **目录默认值**，不是不可改的。
+`dsh-llm-pi-ai` 的 provider 级 schema 支持 `modelOverrides`（已用 Config 内省
+确认字段存在），合并逻辑为：
+
+```js
+const entries = configured.length > 0 ? configured : [...defaults.values()].map((model) => ({
+  id: model.id,
+  ...overrides[model.id]        // ← 按模型 id 覆盖任意 modelFields（含 contextWindow）
+}));
+```
+
+因此在 profile 里为 luna/sol/terra 覆盖为原生 1,050,000，长会话即可正常切换。
+代价：超过 272K 的请求按 OpenAI 长上下文价计费（input ×2 / output ×1.5）。
+
 ### 关于 272K 与 1.05M（更正）
 
 此前把 `openai-codex` 目录里的 `contextWindow: 272000` 泛化成「GPT-5.6 模型硬上限」，这是错误的。核对同一 pi-ai 目录：`openai-codex` / `openai` 条目是 272K，而 OpenRouter / Vercel / Azure / Bedrock / Copilot 等条目是 1.05M；Kiro 官方 changelog 写明 Sol/Terra/Luna 从 272K 升级到 1M，并明确 272K 是长上下文计价分界；Simon Willison 的 GPT-5.6 发布记录也写明三款模型为 1M context。
