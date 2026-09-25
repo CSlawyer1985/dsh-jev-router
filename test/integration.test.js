@@ -266,6 +266,20 @@ function stubFetch({ jevBody, jevOk = true } = {}) {
 
 const API_KEY = 'test-typesafe-key';
 
+/** 构造一个指定档位的 Jev 响应（用于测降档的连续确认）。 */
+function jevWithEffort(effort, confidence = 0.9) {
+  return {
+    model: 'jev-1.13.0',
+    answers: {
+      effort: { type: 'choice', choice: effort, probabilities: { [effort]: confidence }, confidence },
+      risk: { type: 'score', score: 1, probabilities: {}, confidence: 0.9 },
+      urgent: { type: 'noul', noul: 0.5 },
+      model: { type: 'choice', choice: 'keep', probabilities: { keep: 1 }, confidence: 0.9 },
+    },
+    usage: {},
+  };
+}
+
 /** 构造一个把模型路由目标指定为 choice 的 Jev 响应。 */
 function jevChoosing(choice) {
   return {
@@ -979,4 +993,84 @@ test('回归：volatile 形态下 confidenceFloor 参与比较（NaN 会让门�
   } finally {
     fetchStub.restore();
   }
+});
+
+// ── 会话状态必须跨轮存活（本 bug 的核心回归） ────────────────
+test('回归：agent 每轮结束被注销后，策略状态必须跨轮保留（否则降档永不生效）', async () => {
+  // DSH 在一轮驱动空闲后会注销 agent 并派发 agent/disposed
+  // （源码注释：*after driver quiescence*）。若在那个事件上删状态，
+  // lowStreak 永远累不到 downgradeStreak —— 降档就是死代码。
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low') });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const produce = async () => ({ provider: 'p', model: 'm', reasoningEffort: 'high' });
+
+    // ── 第 1 轮：判 low，但降档需要连续确认 → 挂起 ──
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'keep-1' }, message: { content: '今天几号' } });
+    const first = await waterfall(host, 'agent/request', { agent: { id: 'keep-1' }, turn: 1, step: 1 }, produce);
+    assert.equal(first.reasoningEffort, 'high', '第一轮判低只记账，不应立刻降档');
+
+    let status = JSON.parse(
+      (await (async () => {
+        const res = fakeResponse();
+        await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+        return res.captured.body;
+      })()),
+    );
+    assert.equal(status.session.lastEffortVerdict.reason, 'downgrade-pending');
+    assert.equal(status.diagnostics.state.lowStreak, 1);
+    assert.equal(status.diagnostics.sessionsCreated, 1);
+
+    // ── 模拟 DSH 在一轮结束时注销 agent ──
+    emit(host, 'agent/disposed', { agent: { id: 'keep-1' } });
+
+    // ── 第 2 轮：再判 low → 连续确认满足，必须真的降档 ──
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'keep-1' }, message: { content: '今天几号' } });
+    const second = await waterfall(host, 'agent/request', { agent: { id: 'keep-1' }, turn: 2, step: 1 }, produce);
+
+    assert.equal(second.reasoningEffort, 'low', '第二轮判低必须真的降档');
+
+    status = JSON.parse(
+      (await (async () => {
+        const res = fakeResponse();
+        await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+        return res.captured.body;
+      })()),
+    );
+    assert.equal(status.session.lastEffortVerdict.reason, 'downgrade');
+    assert.equal(status.session.lastEffortVerdict.changed, true);
+    assert.equal(status.session.effort, 'low');
+
+    // 诊断数字：disposal 只计数，绝不淘汰状态
+    assert.equal(status.diagnostics.disposedSignals, 1, 'disposal 信号被计数');
+    assert.equal(status.diagnostics.sessionsCreated, 1, '不得因为 disposal 而重建会话状态');
+    assert.equal(status.diagnostics.sessionsEvicted, 0, 'disposal 不得淘汰状态');
+    assert.equal(status.diagnostics.state.lowStreak, 0, '降档后计数归零');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('回归：agent/disposed 不得清空会话状态（同一 agent id 复用）', () => {
+  // 这条更直接：只发 disposal，然后确认状态还在。
+  return (async () => {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'keep-2' }, message: { content: '随便问一句' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'keep-2' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p',
+      model: 'm',
+      reasoningEffort: 'high',
+    }));
+
+    for (let i = 0; i < 3; i += 1) emit(host, 'agent/disposed', { agent: { id: 'keep-2' } });
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+    const body = JSON.parse(res.captured.body);
+
+    assert.ok(body.diagnostics.state, '状态必须还在');
+    assert.equal(body.diagnostics.disposedSignals, 3);
+    assert.equal(body.diagnostics.sessionsCreated, 1);
+    assert.equal(body.diagnostics.sessionsEvicted, 0);
+  })();
 });

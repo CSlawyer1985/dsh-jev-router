@@ -668,6 +668,9 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 2026-09-25 | v0.1.0 | 修复 | **前端半导致 DSH 无法启动**（槽位声明竞态 → client fiber FAILED → `web boot: 1 entry did not activate`）→ 改走 `slots.inject` + `apply` 整体 try/catch，新增前端探针 |
 | 2026-09-25 | v0.1.0 | 能力 | 新增设置页密钥输入框 + `POST /jev-router/credential`，密钥经 DSH 凭据存储写入（不进 profile 配置），保存后下一次判定即生效 |
 | 2026-09-25 | v0.1.0 | 能力 | 新增 `scripts/rollback.sh`：一键禁用插件并从备份恢复 profile patch（不需要 DSH 在运行） |
+| 2026-09-25 | v0.1.0 | 修复 | **会话状态每轮被清空**：`agent/disposed` 在「一轮驱动空闲之后」派发，agent 每轮生灭，而我在此事件上删状态 → 降档永不生效、Tier B 粘滞闸永不放行。改为 `lib/session-store.js`（按会话 id 保留 + TTL/LRU 淘汰），disposal 只计数 |
+| 2026-09-25 | v0.1.0 | 修复 | 快照在两轮之间丢失会话信息（`agents.list()[0]` 在 agent 被注销后为空）→ 回落到最近活跃会话 |
+| 2026-09-25 | v0.1.0 | 能力 | 新增 `scripts/try-jev.mjs` 判定评测；修正 `reasoningTokens` 计量口径（当前 build 无人上报该字段 → 显示「未上报」而非假 0%） |
 
 ---
 

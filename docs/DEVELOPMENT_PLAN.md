@@ -41,6 +41,11 @@
 
 | 9 | **前端半让 DSH 无法启动** | `client.js` 的 `apply()` 直接 `slots.register(…)`。槽位由属主插件声明，而"谁的 apply 先跑"无保证；槽位未声明时 register 抛 `is not declared` → client fiber FAILED → 前端启动检查判定 `web boot: 1 entry did not activate / dsh-jev-router: failed` → **DSH 完全起不来，用户只能用安全模式自救**（该流程还会清掉 profile patch 里的自定义条目，用户因此丢了 `agent-default-model` 与 `llm-pi-ai` 两条配置） | 改用 `slots.inject(slotName, () => slots.register(…))`（等待声明，dshmarket 的既有模式）+ 整个 `apply` 包 try/catch，界面问题只降级为告警；新增 `scripts/probe-frontend.mjs` 与仿真实语义的槽位桩作为回归 |
 
+| 10 | **会话状态每轮被清空** | 监听 `agent/disposed` 就 `sessions.delete(id)`。但 DSH 源码注释写明该事件在 **driver quiescence（一轮驱动空闲）之后**派发——agent 是**每轮生灭**的。于是 `lowStreak` 永远累不到 `downgradeStreak`、`pendingModelStreak` 永远累不到 `stickyRounds`、`switches` 预算每轮重置、`roundsSinceEffortChange` 永远停在初值：**降档是死代码，Tier B 的粘滞闸永不放行，迟滞窗口永不生效** | 新增 `lib/session-store.js`：状态按**会话 id** 保留，用 TTL（30 分钟）+ LRU（32 个）淘汰；`agent/disposed` 只计数不删状态。策略状态生命周期与会话对齐，而非与 agent 实例对齐 |
+| 11 | **快照在两轮之间丢失会话信息** | 状态路由用 `agents.list()[0]` 找会话，而 agent 每轮结束就被注销——列表为空时设置页与 `/jev status` 拿不到任何会话数据 | 新增 `sessions.mostRecent()`，快照/状态/诊断在拿不到 live agent 时回落到最近活跃的会话 |
+
+第 10 条的影响面比第 9 条更隐蔽：它**不报错**，只是让功能静默失效。实测中表现为"连发两条简单消息，第二次仍显示 `downgrade-pending`"——如果没有把策略状态暴露成可观测的诊断字段，这个问题只能靠读 DSH 源码才找得到。
+
 第 9 条是本项目最严重的一次事故，也是最值得记的一条教训：**前端半是唯一在 Node 侧完全测不到的代码，而它的失败是致命的**。事故前的验证覆盖了"资产是否交付"，却没有覆盖"模块是否激活"——`__DSH_BOOT__` 里有它、合并包能下载、里面确实有我的代码，但 `apply()` 抛了异常。三件事都成立，应用照样起不来。
 
 ## 隔离验证方法（本轮建立）
