@@ -528,7 +528,7 @@ dsh-jev-router/
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 138 项测试（10 个文件，分五层）
+├── test/                    # 151 项测试（11 个文件，分六层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -539,7 +539,7 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 138 项
+node --test test/*.test.js      # 151 项
 
 # 拿真实消息测 Jev 的判定质量（需要已配置 Key）
 node scripts/try-jev.mjs                    # 内置样例集
@@ -569,6 +569,7 @@ node scripts/try-jev.mjs --json             # 输出 JSON
 | 单元 | `policy` / `pricing` / `classify` / `metrics` / `routes` | 盈亏平衡数学、迟滞与降档确认、五道闸（含硬门禁）、价目解析（含 rowspan 错位与结构不识别）、peak 时段判定、同源校验 |
 | 能力适配 | `model-caps` | 强度轴对齐、夹取规则（上下界/等距/无元数据）、`provider::model` 解析（含 ollama 那种带斜杠冒号的 id）、能力缓存的正/负 TTL |
 | 配置解析 | `config` | volatile 引用拆包、缺省回退、整份配置都是引用时 `resolveConfig` 必须给出裸布尔/数字/字符串 |
+| 会话生命周期 | `session-store` | 同一会话只创建一次、TTL 过期回收、LRU 容量淘汰、`disposal` 只计数不删状态、`create()` 返回值不得被额外包装 |
 | 前端半 | `client` | 用桩 React + **仿真语义的槽位桩**（未声明就抛、`inject` 挂起等待）真正渲染设置页与徽章；覆盖"槽位未声明时 apply 绝不能抛"这条事故回归 |
 | 集成 | `integration` | 假 Cordis 上下文把插件真正 `apply()` 起来，端到端跑 `inbox → Jev → request` 改写、同轮多 step 复用、`llm/stream` 计量、四条路由、命令族、Tier B 硬门禁与放行、跨 provider 路由 |
 | 契约 | `contract` | 禁止改写 `messages`、禁止注册 `systemPrompt`、只允许改 `reasoningEffort`/`model`/`provider`、provider 与 model 成对切换、volatile 字段约定、默认值单一真源 |
