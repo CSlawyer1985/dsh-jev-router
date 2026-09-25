@@ -1,10 +1,12 @@
 # dsh-jev-router
 
 <p align="center">
-  <a href="https://chenshi.ai"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-  <a href="https://chenshi.ai"><img src="https://img.shields.io/badge/version-v0.1.0-brightgreen" alt="Version"></a>
+  <a href="https://github.com/CSlawyer1985/dsh-jev-router/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/CSlawyer1985/dsh-jev-router/releases"><img src="https://img.shields.io/badge/version-v0.1.0-brightgreen" alt="Version"></a>
+  <a href="https://github.com/CSlawyer1985/dsh-jev-router/actions/workflows/test.yml"><img src="https://github.com/CSlawyer1985/dsh-jev-router/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/CSlawyer1985/dsh-jev-router/stargazers"><img src="https://img.shields.io/github/stars/CSlawyer1985/dsh-jev-router?style=flat" alt="Stars"></a>
+  <a href="https://github.com/CSlawyer1985/dsh-jev-router/issues"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <a href="https://chenshi.ai"><img src="https://img.shields.io/badge/author-chenshi.ai-orange" alt="Author"></a>
-  <a href="https://chenshi.ai"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
   <br>
   <b>让 Jev 决定这次该用多强的推理</b>
   <br>
@@ -19,7 +21,7 @@
 >
 > **核心承诺：判定永不进入 prompt 前缀。** 判定结果只走 `agent/request` 改写调用配置，不改写 `messages`、不注册 system prompt。这是本插件唯一不可妥协的设计，且有契约测试守着。
 >
-> **作者：[chenshi.ai](https://chenshi.ai)** · 决策模型：Jev（TypeSafe AI System One）
+> **仓库：<https://github.com/CSlawyer1985/dsh-jev-router>** · **作者：[chenshi.ai](https://chenshi.ai)** · 决策模型：Jev（TypeSafe AI System One）
 
 ---
 
@@ -462,7 +464,10 @@ cd ~/.dsh/profiles/<profile> && pnpm install
 ### 方式 B：作为 bundle 安装（推荐用于使用）
 
 ```bash
-dsh plugin install <包名或本地路径>
+# 从 GitHub 安装
+npm install --no-save CSlawyer1985/dsh-jev-router
+# 或本地路径
+dsh plugin install /path/to/dsh-jev-router
 ```
 
 或直接把包放进 profile 的 `node_modules`，并在 `cordis.patch.yml` 里插入：

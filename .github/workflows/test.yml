@@ -1,0 +1,53 @@
+name: test
+
+# 本插件的测试**零外部依赖**：不需要安装 @deepseek-ai/*（schema 库用动态 import + 降级），
+# 所以 CI 只需要 Node 本身。这也是为什么这些测试可以在任何环境里跑。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    name: Node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查（Host 半 + Client 半）
+        run: |
+          for f in lib/*.js client/*.js test/*.js scripts/*.mjs; do
+            node --check "$f"
+          done
+
+      - name: 单元 / 集成 / 前端渲染 / 契约 测试
+        run: node --test test/*.test.js
+
+      - name: Shell 脚本语法检查
+        run: |
+          bash -n scripts/verify-install.sh
+          bash -n scripts/rollback.sh
+
+      - name: 契约红线抽查（判定不得改写 messages）
+        run: |
+          if grep -nE '\.messages\s*=' lib/index.js; then
+            echo "::error::agent/request 不得改写 messages —— 那会破坏 prompt 前缀缓存"
+            exit 1
+          fi
+          if grep -n 'systemPrompt' lib/index.js; then
+            echo "::error::判定结果不得注入 system prompt"
+            exit 1
+          fi
+          echo "契约红线检查通过"

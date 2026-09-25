@@ -59,5 +59,12 @@
   ],
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CSlawyer1985/dsh-jev-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CSlawyer1985/dsh-jev-router/issues"
   }
 }
