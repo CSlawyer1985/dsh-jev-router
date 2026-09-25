@@ -15,6 +15,7 @@ const CONFIG = {
   confidenceFloor: 0.5,
   hysteresisRounds: 2,
   downgradeStreak: 2,
+  riskCeiling: 0.6,
   modelRouting: true,
   acknowledgeCacheRisk: true,
   modelSwitchMode: 'turn-boundary',
@@ -178,4 +179,132 @@ test('predictOutputSaving: 无样本时为 0（不会凭空乐观）', () => {
   assert.equal(predictOutputSaving(0), 0);
   assert.equal(predictOutputSaving(undefined), 0);
   assert.equal(predictOutputSaving(1500), 1500);
+});
+
+// ── 降档的即时生效（risk 豁免） ──────────────────────────────
+// 诉求：'每条消息都立即生效'，否则用户会以为这个能力失效了。
+// 但也不能放弃'防一次误判砍掉推理强度'的保护 —— 用 Jev 自己的 risk 分来区分。
+
+test('低错误代价的降档立即生效，不再等第二轮', () => {
+  // 实测"把 JSON 格式化成两空格缩进"：risk 0.30，属于"答错也不要紧"。
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+
+  const verdict = decideEffort({
+    state,
+    config: CONFIG,
+    decided: 'low',
+    confidence: 0.84,
+    currentHarnessEffort: 'high',
+    risk: 0.3,
+  });
+
+  assert.equal(verdict.effort, 'low', '低代价降档必须立即生效');
+  assert.equal(verdict.reason, 'downgrade', '原因应是 downgrade，不是 downgrade-pending');
+  assert.equal(verdict.changed, true);
+});
+
+test('高错误代价的降档仍然要求连续确认（保护不被削弱）', () => {
+  // "线上超时定位根因"：risk 2.09 —— 答错后果严重，一次误判代价大。
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+
+  const first = decideEffort({
+    state,
+    config: CONFIG,
+    decided: 'low',
+    confidence: 0.99,
+    currentHarnessEffort: 'high',
+    risk: 2.09,
+  });
+  assert.equal(first.effort, 'high', '高风险降档第一轮必须挂起');
+  assert.equal(first.reason, 'downgrade-pending');
+
+  const second = decideEffort({
+    state,
+    config: CONFIG,
+    decided: 'low',
+    confidence: 0.99,
+    currentHarnessEffort: 'high',
+    risk: 2.09,
+  });
+  assert.equal(second.effort, 'low', '第二轮确认通过');
+  assert.equal(second.reason, 'downgrade');
+});
+
+test('risk 边界：恰好等于 riskCeiling 时视为低代价', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'off', confidence: 0.9,
+    currentHarnessEffort: 'high', risk: CONFIG.riskCeiling,
+  });
+  assert.equal(verdict.reason, 'downgrade', '<= ceiling 应即时生效');
+});
+
+test('risk 缺失（Jev 未返回）时保守处理：仍需确认', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'low', confidence: 0.9,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.reason, 'downgrade-pending', '缺少 risk 信息时不得放宽保护');
+});
+
+test('升档不受 riskCeiling 影响（本来就不需要确认）', () => {
+  const state = createSessionState();
+  state.effort = 'low';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'max', confidence: 0.7,
+    currentHarnessEffort: 'low', risk: 2.9,
+  });
+  assert.equal(verdict.effort, 'max');
+  assert.equal(verdict.reason, 'upgrade');
+});
+
+// ── 判定缺失时沿用上一个判定 ────────────────────────────────
+test('本轮没有判定但上一轮有 → 沿用上一轮的意图（降档）', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.lastDecided = 'low';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: null, confidence: 0,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'low');
+  assert.equal(verdict.reason, 'carry-downgrade');
+});
+
+test('沿用也受迟滞窗口约束', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.lastDecided = 'low';
+  state.roundsSinceEffortChange = 0;
+
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: null, confidence: 0,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'high');
+  assert.equal(verdict.reason, 'hysteresis');
+});
+
+test('从未有过判定且本轮也没有 → no-decision，保持不动', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: null, confidence: 0,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'high');
+  assert.equal(verdict.reason, 'no-decision');
 });

@@ -201,7 +201,7 @@ Jev 是 [TypeSafe AI](https://typesafe.ai) 的 **System One 决策模型**（作
   │     ├─ 档位裁决 decideEffort()
   │     │    · 手动 effort≠auto → 直接用（manual-override）
   │     │    · 置信度 < confidenceFloor → 弃权
-  │     │    · 降档且非关键词来源 → 需连续 downgradeStreak 轮确认
+  │     │    · 降档且「风险高 且 非用户明说」→ 才需连续 downgradeStreak 轮确认
   │     │    · 距上次换档 < hysteresisRounds → 不动
   │     ├─ 能力夹取 clampEffort()
   │     │    向 llm.resolveModelInfo(provider, model) 问 reasoning.efforts
@@ -412,7 +412,8 @@ outputTokens     =     532,830
 | `confidenceFloor` | `0.5` | 低于此置信度弃权，沿用 harness 默认档 |
 | `fallbackEffort` | `high` | Jev 不可用时的关键词回退默认档 |
 | `hysteresisRounds` | `2` | 迟滞窗口（轮） |
-| `downgradeStreak` | `2` | 降档需连续确认轮数（关键词回退豁免） |
+| `downgradeStreak` | `2` | 降档需连续确认轮数。**只作用于高错误代价的降档**；低代价与关键词回退立即生效 |
+| `riskCeiling` | `0.6` | 「低错误代价」上界（Jev 的 risk 分 0–3）。risk 不超过此值的降档立即生效 |
 | `timeoutMs` | `1500` | 单次判定超时；超时即回退，绝不阻塞用户请求 |
 | `blockOnDecision` | `true` | 首步是否等待判定结果；关闭后用上一轮判定，延迟更低 |
 
