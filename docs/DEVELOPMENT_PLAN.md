@@ -41,10 +41,19 @@
 
 | 9 | **前端半让 DSH 无法启动** | `client.js` 的 `apply()` 直接 `slots.register(…)`。槽位由属主插件声明，而"谁的 apply 先跑"无保证；槽位未声明时 register 抛 `is not declared` → client fiber FAILED → 前端启动检查判定 `web boot: 1 entry did not activate / dsh-jev-router: failed` → **DSH 完全起不来，用户只能用安全模式自救**（该流程还会清掉 profile patch 里的自定义条目，用户因此丢了 `agent-default-model` 与 `llm-pi-ai` 两条配置） | 改用 `slots.inject(slotName, () => slots.register(…))`（等待声明，dshmarket 的既有模式）+ 整个 `apply` 包 try/catch，界面问题只降级为告警；新增 `scripts/probe-frontend.mjs` 与仿真实语义的槽位桩作为回归 |
 
-| 10 | **会话状态每轮被清空** | 监听 `agent/disposed` 就 `sessions.delete(id)`。但 DSH 源码注释写明该事件在 **driver quiescence（一轮驱动空闲）之后**派发——agent 是**每轮生灭**的。于是 `lowStreak` 永远累不到 `downgradeStreak`、`pendingModelStreak` 永远累不到 `stickyRounds`、`switches` 预算每轮重置、`roundsSinceEffortChange` 永远停在初值：**降档是死代码，Tier B 的粘滞闸永不放行，迟滞窗口永不生效** | 新增 `lib/session-store.js`：状态按**会话 id** 保留，用 TTL（30 分钟）+ LRU（32 个）淘汰；`agent/disposed` 只计数不删状态。策略状态生命周期与会话对齐，而非与 agent 实例对齐 |
-| 11 | **快照在两轮之间丢失会话信息** | 状态路由用 `agents.list()[0]` 找会话，而 agent 每轮结束就被注销——列表为空时设置页与 `/jev status` 拿不到任何会话数据 | 新增 `sessions.mostRecent()`，快照/状态/诊断在拿不到 live agent 时回落到最近活跃的会话 |
+| 10 | **误诊记录：把 `downgrade-pending` 归因于 `agent/disposed` 清空状态** | 观察到"连发两条简单消息，第二次仍是 `downgrade-pending`"，据 DSH 源码注释 *"AgentLoop emits this after driver quiescence"* 推断 agent 每轮被注销、而我在该事件上 `sessions.delete()`，于是判定策略状态被每轮清空 | **归因错误，已更正。** 反证有三：① 新代码加了 `disposedSignals` 计数后，跨轮始终为 **0**——该事件在本场景根本没派发过；② 实测改文件（mtime 与内容都改）不会重载插件，状态不丢；③ 会话日志显示两次观察之间**应用被重启过**（`request/header` 的 `reason` 从 `series` 变 `resume`，进程启动时间 `13:56:33` 晚于前一次观察）。真实原因是**进程重启清空了内存态**，不是 `agent/disposed` |
+| 11 | 会话状态只存在于内存 | 应用重启后，连续确认计数（`lowStreak`）归零。若用户在两轮之间重启应用，降档需要重新累积，表现为"功能好像没生效" | 保持内存态（重启视为新起点，且 harness 自身的档位配置也随之重置，语义一致），但把这一点写进文档；状态生命周期改由 `lib/session-store.js` 统一管理 |
+| 12 | 快照在两轮之间丢失会话信息 | 状态路由用 `agents.list()[0]` 找会话，拿不到 live agent 时返回 null，设置页与 `/jev status` 会退化成空白 | 新增 `sessions.mostRecent()`，快照/状态/诊断/回滚回落到最近活跃的会话 |
 
-第 10 条的影响面比第 9 条更隐蔽：它**不报错**，只是让功能静默失效。实测中表现为"连发两条简单消息，第二次仍显示 `downgrade-pending`"——如果没有把策略状态暴露成可观测的诊断字段，这个问题只能靠读 DSH 源码才找得到。
+### 第 10 条的教训：可观测性比推理更可靠
+
+这次误诊的价值不在结论，而在**纠正方式**。事后复盘，正确做法是：
+
+1. **先加可观测性再下结论。** 如果一开始就把策略状态暴露成诊断字段（`lowStreak` / `sessionsCreated` / `disposedSignals`），"状态到底有没有被重建"是一个可以**直接读出来**的数，不需要从源码注释去推断。
+2. **区分"状态被清空"与"状态被重建"。** 前者看 `lowStreak` 是否归零，后者看 `sessionsCreated` 是否增长——两个不同的数指向两个不同的原因。
+3. **把外部事件纳入考虑。** 日志里的 `request/header.reason`（`series` / `resume`）与进程启动时间，直接指出了"进程重启"这条被我忽略的路径。
+
+因此 `lib/session-store.js` 的价值被重新定位：它**不是**某个 bug 的修复，而是一次生命周期语义的收敛——把状态归属从"agent 实例"改为"会话"，用 TTL + LRU 取代无上限增长，并提供 `mostRecent()` 兜底。这些改进本身成立，但与原先声称的失效原因无关。
 
 第 9 条是本项目最严重的一次事故，也是最值得记的一条教训：**前端半是唯一在 Node 侧完全测不到的代码，而它的失败是致命的**。事故前的验证覆盖了"资产是否交付"，却没有覆盖"模块是否激活"——`__DSH_BOOT__` 里有它、合并包能下载、里面确实有我的代码，但 `apply()` 抛了异常。三件事都成立，应用照样起不来。
 

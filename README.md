@@ -372,6 +372,15 @@ $$\Delta_{out}\cdot 3P_{miss} \;>\; 0.967\,N\,P_{miss} \;\Longrightarrow\; \boxe
 
 命中率的时间形状（同一会话内连续 step）也值得注意：会话开头 1–2 步是冷启动（20% → 0%），随后爬到 97%+。**真正的缓存损失在会话边界与前缀重写，不在档位切换。**
 
+**同一会话的独立核实**（直接从 `session.v4.jsonl.zstd` 的 439 个 usage 样本统计）：
+
+```
+cacheReadTokens  = 172,263,296
+inputTokens      =   1,047,071
+outputTokens     =     532,830
+命中率           =      99.40%
+```
+
 > **关于 `reasoning` 这一行的口径**：上面的数字来自会话日志（跨多个 DSH build）。
 > 但**当前 DSH build 里没有任何适配器填充 `reasoningTokens`**——DeepSeek、pi-ai、Anthropic/OpenAI 都不填（该字段只在 token-meter 类型与 UI 里被消费，没有生产者）。
 > 所以插件在设置页显示 **「未上报」而不是 0%**：provider 不上报不等于没有思考。
@@ -669,9 +678,11 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 2026-09-25 | v0.1.0 | 修复 | **前端半导致 DSH 无法启动**（槽位声明竞态 → client fiber FAILED → `web boot: 1 entry did not activate`）→ 改走 `slots.inject` + `apply` 整体 try/catch，新增前端探针 |
 | 2026-09-25 | v0.1.0 | 能力 | 新增设置页密钥输入框 + `POST /jev-router/credential`，密钥经 DSH 凭据存储写入（不进 profile 配置），保存后下一次判定即生效 |
 | 2026-09-25 | v0.1.0 | 能力 | 新增 `scripts/rollback.sh`：一键禁用插件并从备份恢复 profile patch（不需要 DSH 在运行） |
-| 2026-09-25 | v0.1.0 | 修复 | **会话状态每轮被清空**：`agent/disposed` 在「一轮驱动空闲之后」派发，agent 每轮生灭，而我在此事件上删状态 → 降档永不生效、Tier B 粘滞闸永不放行。改为 `lib/session-store.js`（按会话 id 保留 + TTL/LRU 淘汰），disposal 只计数 |
-| 2026-09-25 | v0.1.0 | 修复 | 快照在两轮之间丢失会话信息（`agents.list()[0]` 在 agent 被注销后为空）→ 回落到最近活跃会话 |
-| 2026-09-25 | v0.1.0 | 能力 | 新增 `scripts/try-jev.mjs` 判定评测；修正 `reasoningTokens` 计量口径（当前 build 无人上报该字段 → 显示「未上报」而非假 0%） |
+| 2026-09-25 | v0.1.0 | 重构 | 会话状态生命周期收敛到 `lib/session-store.js`：按**会话 id** 保留（而非 agent 实例），TTL 30 分钟 + LRU 32 个淘汰，取代原来的无上限 Map；`agent/disposed` 只计数不删状态 |
+| 2026-09-25 | v0.1.0 | 修复 | 快照在两轮之间丢失会话信息（`agents.list()[0]` 拿不到 live agent 时为空）→ 新增 `sessions.mostRecent()` 回落到最近活跃会话 |
+| 2026-09-25 | v0.1.0 | 更正 | **一次误诊的更正**：曾把"连发两条简单消息仍是 `downgrade-pending`"归因于 `agent/disposed` 清空状态。加诊断后反证——`disposedSignals` 始终为 0，且会话日志显示两次观察之间**应用被重启过**（`request/header.reason` 从 `series` 变 `resume`）。真实原因是**进程重启清空内存态**，非该事件。详见 [开发规划](docs/DEVELOPMENT_PLAN.md) 第 10 条 |
+| 2026-09-25 | v0.1.0 | 能力 | 新增诊断字段（`sessionsCreated` / `sessionsEvicted` / `disposedSignals` / `lowStreak` / 最近 8 次裁决）——这类不报错的失效只能靠可观测性发现 |
+| 2026-09-25 | v0.1.0 | 能力 | 新增 `scripts/try-jev.mjs` 判定评测；修正 `reasoningTokens` 计量口径（当前 build 无人上报该字段 → 显示「未上报」而非假 0%）。**已用会话日志核实**：439 个 usage 样本的字段集合为 `cacheReadTokens / cacheWriteTokens / inputTokens / outputTokens / totalTokens`，无 `reasoningTokens` |
 
 ---
 
