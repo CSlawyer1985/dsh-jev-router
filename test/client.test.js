@@ -38,6 +38,8 @@ function createReactStub() {
     useState(initial) {
       return [typeof initial === 'function' ? initial() : initial, () => {}];
     },
+    // 不执行 effect：同步执行会因 setState 触发无限渲染。
+    // 需要 status 不为 null 的测试，直接用源码断言（见占位徽章那条）。
     useEffect() {},
     useCallback(fn) {
       return fn;
@@ -402,4 +404,27 @@ test('设置页必须暴露全部可调项，而不是只给几个开关', () =>
   for (const label of tunable) {
     assert.ok(text.includes(label), `设置页缺少可调项：${label}`);
   }
+});
+
+test('回归：会话未就绪时的占位徽章绝不能有副作用（曾把全局档位改成 off）', () => {
+  // 真实事故：占位按钮的 onClick 写了 postConfig({effort: 下一档})，
+  // 用户点一下就把**全局**手动档位从 auto 改成 off，
+  // 从此所有会话都被 manual-override 钉死、Jev 判定被完全绕过，
+  // 现象是「思考强度完全不变化」。
+  //
+  // 这里用源码结构断言：占位分支必须是 disabled 且没有 onClick。
+  // （不渲染真实节点，因为测试桩不执行 effect，status 恒为 null。）
+  const src = stripComments(readFileSync(join(ROOT, 'client/client.js'), 'utf8'));
+  const i = src.indexOf('if (status && !exact) {');
+  assert.ok(i > 0, '应当存在"会话未就绪"的占位分支');
+  const block = src.slice(i, src.indexOf('const effort = status && status.session', i));
+  assert.match(block, /disabled:\s*true/, '占位徽章必须 disabled');
+  assert.ok(!/onClick/.test(block), '占位徽章绝不能带 onClick —— 那会写全局配置');
+  assert.match(block, /⚡ \?/);
+});
+
+test('手动钉死档位时，徽章必须用 🔒 标出来（否则会被当成自动调节失效）', () => {
+  const src = stripComments(readFileSync(join(ROOT, 'client/client.js'), 'utf8'));
+  assert.match(src, /isManual \? "🔒 " : "⚡ "/, '徽章应区分手动与自动');
+  assert.match(src, /manual-override/, '应识别 manual-override 裁决原因');
 });

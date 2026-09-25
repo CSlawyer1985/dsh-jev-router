@@ -264,17 +264,18 @@ window.__ModuleLoader__.load({
       // "最近活跃会话"，那可能是别的会话——宁可不显示，也不能显示错的档位。
       const exact = Boolean(status && status.session && status.session.scope === "exact");
       if (status && !exact) {
+        // ⚠️ 这里**绝不能**写配置。
+        // 早先这个占位按钮的 onClick 会 postConfig({effort: 下一档})，
+        // 点一下就把**全局**手动档位从 auto 改成 off，于是所有会话都被钉死、
+        // Jev 判定被完全绕过——用户看到的现象是「思考强度完全不变化」。
+        // 一个"状态未知"的占位符不该有任何副作用。
         return h(
           "button",
           {
             type: "button",
-            style: Object.assign({}, S.badge, { opacity: 0.5 }),
-            title: "Jev 路由：无法确定当前会话（槽位未提供 sessionId）\n点击可手动指定档位",
-            onClick: async () => {
-              const index = CYCLE.indexOf("auto");
-              await postConfig({ effort: CYCLE[(index + 1) % CYCLE.length] });
-              reload();
-            },
+            disabled: true,
+            style: Object.assign({}, S.badge, { opacity: 0.5, cursor: "default" }),
+            title: "Jev 路由：尚未确定当前会话的档位（等待会话就绪）。此按钮只做提示，不改变任何设置。",
           },
           "⚡ ?",
         );
@@ -283,10 +284,17 @@ window.__ModuleLoader__.load({
       const decided = status && status.session ? status.session.decided : null;
       const enabled = status && status.config ? status.config.enabled : true;
       const current = status && status.config ? status.config.effort : "auto";
+      // 手动钉死时，Jev 判定被完全绕过 —— 必须在徽章上标出来，
+      // 否则用户会以为「自动调节不工作」。
+      const manual = Boolean(current && current !== "auto");
+      const verdict = status && status.session ? status.session.lastEffortVerdict : null;
+      const isManual = manual || (verdict && verdict.reason === "manual-override");
       const title = status
         ? [
             "Jev 路由：" + (enabled ? "开" : "关"),
-            "手动档位：" + current,
+            manual
+              ? "手动档位：" + current + "（Jev 自动判定已被绕过；点一下回到 auto）"
+              : "手动档位：auto（Jev 自动判定生效中）",
             "Jev 判定：" + (decided || "—"),
             "生效档位：" + (effort || "harness 默认"),
             "缓存命中率：" + fmtPct(status.metrics ? status.metrics.hitRate : null),
@@ -300,14 +308,17 @@ window.__ModuleLoader__.load({
           type: "button",
           title,
           style: Object.assign({}, S.badge, { opacity: enabled ? 1 : 0.5 }),
+          // 点击循环：auto → off → low → high → max → auto。
+          // 当前是手动档位时，第一次点击直接回到 auto（而不是继续往下降一档），
+          // 这样"解锁"只需一次点击，也减少误把自动模式往下调的机会。
           onClick: async () => {
-            const index = CYCLE.indexOf(current);
-            const next = CYCLE[(index + 1) % CYCLE.length];
+            const next = isManual ? "auto" : CYCLE[(CYCLE.indexOf(current) + 1) % CYCLE.length];
             await postConfig({ effort: next });
             reload();
           },
         },
-        "⚡ " + (effort || "auto"),
+        // 手动钉死时用 🔒 明确区分，避免"自动调节好像没用"的误解。
+        (isManual ? "🔒 " : "⚡ ") + (effort || "auto"),
       );
     }
 
