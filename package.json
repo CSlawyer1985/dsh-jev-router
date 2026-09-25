@@ -1,0 +1,63 @@
+{
+  "name": "dsh-jev-router",
+  "version": "0.1.0",
+  "description": "Jev 决策模型路由插件：默认只调思考强度（缓存安全），可选自动模型路由（默认关闭 + 缓存代价硬门禁）· DeepSeek Harness plugin",
+  "author": "chenshi.ai",
+  "homepage": "https://chenshi.ai",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "files": [
+    "lib",
+    "client",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "scripts"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check lib/index.js && node --check client/client.js",
+    "verify": "bash scripts/verify-install.sh"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-settings": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "jev",
+    "typesafe",
+    "reasoning-effort",
+    "prompt-cache",
+    "model-router"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

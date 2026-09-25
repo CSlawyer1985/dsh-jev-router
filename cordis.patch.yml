@@ -1,0 +1,7 @@
+# dsh bundle patch: 把 dsh-jev-router 插入 profile 的 layer 栈。
+#
+# 该 id 同时是设置页的 namespace（settings.update(ns, patch) 的 ns），
+# 插件运行时会用 `config.namespace ?? 'jev-router'` 解析，改名需同步。
+- insert:
+    - id: jev-router
+      name: 'dsh-jev-router'

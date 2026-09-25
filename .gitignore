@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 运行时状态（价目缓存等，属于本机状态，不入库）
+pricing.json
+*.log
+
+# 本地凭据与环境
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 备份
+*.bak
+*.bak-*
+*.orig
