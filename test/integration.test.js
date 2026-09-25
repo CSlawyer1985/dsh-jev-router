@@ -1159,3 +1159,80 @@ test('状态快照必须公开全部可调字段（否则设置页没有可调�
   assert.equal(typeof cfg.confidenceFloor, 'number');
   assert.equal(cfg.riskCeiling, 0.6);
 });
+
+// ── Jev 失败必须可观测（用户实际遇到「你好」走 heuristic）────────
+test('回归：Jev 超时降级为关键词表时，必须留下失败原因', async () => {
+  // 实测：冷启动 1367ms、热调用 358ms，而早先 timeoutMs 默认 1500ms ——
+  // 重启后第一次判定几乎必然超时，且**静默**降级，用户看到的是
+  // 「这个能力没生效」。所以失败原因必须被记录并可查询。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const error = new Error('This operation was aborted');
+    error.name = 'AbortError';
+    throw error;
+  };
+  try {
+    const { host } = await mount({ timeoutMs: 50 }, { apiKey: API_KEY });
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'fail-1' }, message: { content: '你好' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'fail-1' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+    const body = JSON.parse(res.captured.body);
+
+    assert.equal(body.session.source, 'heuristic', '失败后应当回退关键词表');
+    assert.ok(body.diagnostics.jevFailure, '必须记录失败原因，不能静默');
+    assert.equal(body.diagnostics.jevFailure.kind, 'timeout', '应识别为超时');
+    assert.equal(body.diagnostics.jevFailure.timeoutMs, 50);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('回归：Jev 成功时清空上一次的失败记录', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('high', 0.9) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'ok-1' }, message: { content: '你好' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'ok-1' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'low',
+    }));
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+    const body = JSON.parse(res.captured.body);
+    assert.equal(body.session.source.startsWith('jev('), true);
+    assert.equal(body.diagnostics.jevFailure, null, '成功时不应残留失败记录');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('默认 timeoutMs 必须给冷启动留余量（不能卡在热调用中位数上）', async () => {
+  const { DEFAULTS } = await import('../lib/config.js');
+  // 实测冷启动 1367-1463ms，热调用 358-548ms。
+  assert.ok(
+    DEFAULTS.timeoutMs >= 3000,
+    `timeoutMs 默认值 ${DEFAULTS.timeoutMs}ms 太紧：冷启动实测可达 1463ms，会在重启后首次判定超时`,
+  );
+});
+
+test('回归：未配置 Key 时也要记录可区分的原因（而不是无声无息）', async () => {
+  // 「没配 Key」与「请求失败」在界面上必须能区分开，
+  // 否则用户只会看到"能力没生效"，不知道该去配 Key 还是查网络。
+  const { host } = await mount({}, { apiKey: null });
+  emit(host, 'agent/inbox/inserted', { agent: { id: 'nokey-1' }, message: { content: '你好' } });
+  await waterfall(host, 'agent/request', { agent: { id: 'nokey-1' }, turn: 1, step: 1 }, async () => ({
+    provider: 'p', model: 'm', reasoningEffort: 'high',
+  }));
+
+  const res = fakeResponse();
+  await host.registeredRoutes.get('/jev-router/status').handler(fakeRequest({ method: 'GET' }), res);
+  const body = JSON.parse(res.captured.body);
+
+  assert.equal(body.session.source, 'heuristic');
+  assert.ok(body.diagnostics.jevFailure, '必须留下原因');
+  assert.equal(body.diagnostics.jevFailure.kind, 'not-configured', '应能区分「未配置」与「请求失败」');
+});
