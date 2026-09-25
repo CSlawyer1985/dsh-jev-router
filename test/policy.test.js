@@ -16,6 +16,7 @@ const CONFIG = {
   hysteresisRounds: 2,
   downgradeStreak: 2,
   riskCeiling: 0.6,
+  offFloorChars: 280,
   modelRouting: true,
   acknowledgeCacheRisk: true,
   modelSwitchMode: 'turn-boundary',
@@ -307,4 +308,115 @@ test('从未有过判定且本轮也没有 → no-decision，保持不动', () =
   });
   assert.equal(verdict.effort, 'high');
   assert.equal(verdict.reason, 'no-decision');
+});
+
+// ── 弃权不得保留上一次的降档（真实质量事故的回归）────────────
+test('回归：弃权时必须撤销上一次的降档，不能留在低档跑真实任务', () => {
+  // 事故：先「你好」→ 立即降到 off；再来一条几百字的批改任务，
+  // Jev 判 low 但置信度 0.45 < 门槛 → 弃权 → **档位留在 off**，
+  // 真实任务在 thinking:disabled 下运行。
+  const state = createSessionState();
+  state.effort = 'off';          // 上一条"你好"降下来的
+  state.roundsSinceEffortChange = 0;  // 而且迟滞窗口还没过
+
+  const verdict = decideEffort({
+    state,
+    config: CONFIG,
+    decided: 'low',
+    confidence: 0.45,            // 低于门槛 → 弃权
+    currentHarnessEffort: 'high',
+  });
+
+  assert.equal(verdict.effort, 'high', '弃权必须回退到 harness 默认，不能留在 off');
+  assert.equal(verdict.reason, 'abstain-restore');
+  assert.equal(verdict.changed, true);
+  assert.equal(state.effort, 'high');
+});
+
+test('弃权回退绕过迟滞窗口（安全方向的修正不该被防抖挡住）', () => {
+  const state = createSessionState();
+  state.effort = 'off';
+  state.roundsSinceEffortChange = 0;   // 迟滞本来会拦住一切变化
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: null, confidence: 0,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'high', '迟滞不得挡住安全回退');
+  assert.equal(verdict.reason, 'abstain-restore');
+});
+
+test('弃权但当前档位不低于默认时，保持不动（不做无意义的变化）', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'low', confidence: 0.2,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'high');
+  assert.equal(verdict.reason, 'low-confidence', '本就在默认档位，无需回退');
+  assert.equal(verdict.changed, false);
+});
+
+test('弃权时若当前档位高于默认，不回退（只撤销降档，不撤销升档）', () => {
+  const state = createSessionState();
+  state.effort = 'max';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'low', confidence: 0.2,
+    currentHarnessEffort: 'high',
+  });
+  assert.equal(verdict.effort, 'max', '升档不需要被弃权撤销');
+  assert.equal(verdict.changed, false);
+});
+
+// ── off 地板：长消息不得判为「琐碎」──────────────────────────
+test('回归：长消息即使被判 off 也要抬到 low（防 Jev 的 CJK 弱项）', () => {
+  // off 的语义是"琐碎到不需要思考"，需要"短消息"这个正面证据。
+  // Jev 对中文准确率官方说明较低，长中文请求被判 off 是高风险组合。
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'off', confidence: 0.95,
+    currentHarnessEffort: 'high', messageChars: 400, risk: 0.1,
+  });
+  assert.equal(verdict.effort, 'low', '长消息不得降到 off');
+  assert.match(verdict.reason, /off-floor/);
+});
+
+test('短消息仍可降到 off（地板不误伤真正的琐碎请求）', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: CONFIG, decided: 'off', confidence: 1,
+    currentHarnessEffort: 'high', messageChars: 2, risk: 0.1,
+  });
+  assert.equal(verdict.effort, 'off');
+});
+
+test('offFloorChars=0 关闭地板', () => {
+  const state = createSessionState();
+  state.effort = 'high';
+  state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+  const verdict = decideEffort({
+    state, config: { ...CONFIG, offFloorChars: 0 }, decided: 'off', confidence: 1,
+    currentHarnessEffort: 'high', messageChars: 5000, risk: 0.1,
+  });
+  assert.equal(verdict.effort, 'off', '关闭后应尊重 Jev 判定');
+});
+
+test('地板只抬 off，不影响 low/high/max', () => {
+  for (const d of ['low', 'high']) {
+    const state = createSessionState();
+    state.effort = d === 'low' ? 'high' : 'low';
+    state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
+    const verdict = decideEffort({
+      state, config: CONFIG, decided: d, confidence: 0.9,
+      currentHarnessEffort: state.effort, messageChars: 5000, risk: 0.1,
+    });
+    assert.equal(verdict.effort, d, `${d} 不应被地板改变`);
+  }
 });

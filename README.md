@@ -416,6 +416,7 @@ outputTokens     =     532,830
 | `hysteresisRounds` | `2` | 迟滞窗口（轮） |
 | `downgradeStreak` | `2` | 降档需连续确认轮数。**只作用于高错误代价的降档**；低代价与关键词回退立即生效 |
 | `riskCeiling` | `0.6` | 「低错误代价」上界（Jev 的 risk 分 0–3）。risk 不超过此值的降档立即生效 |
+| `offFloorChars` | `280` | `off` 地板的字符阈值：消息不短于此长度时不允许降到 `off`（0 = 关闭）。`off` 的语义是"琐碎到不需要思考"，需要"短消息"这个正面证据；Jev 对中文准确率官方说明较低 |
 | `syncSessionEffort` | `true` | 把生效档位同步进**会话配置**（写 `model/selection`），让 DSH 原生的「模型后面的思考程度」跟随。关掉则原生界面永远停在会话设置上 |
 
 > **全部可调项都在插件的设置页上**（设置 → 插件 → Jev 路由），不必去 DSH 的通用设置里找。`status.config` 会公开全部可调字段的**已解析值**，所以新增配置项会自动出现在页面上。
@@ -550,7 +551,7 @@ dsh-jev-router/
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 178 项测试（11 个文件，分六层）
+├── test/                    # 186 项测试（11 个文件，分六层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -561,7 +562,7 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 178 项
+node --test test/*.test.js      # 186 项
 
 # 拿真实消息测 Jev 的判定质量（需要已配置 Key）
 node scripts/try-jev.mjs                    # 内置样例集
@@ -682,6 +683,8 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 日期 | 版本 | 类型 | 要点 |
 |------|------|------|------|
 | 2026-09-25 | v0.1.0 | 初始发布 | Tier A 思考强度路由（迟滞 + 置信度门 + 关键词回退）+ Tier B 自动模型路由（五道闸 + 硬门禁 + 三步确认 + 回滚）+ `/jev` 命令族 + 设置页 + 徽章 + 署名 |
+| 2026-09-25 | v0.1.0 | 修复 | **弃权会保留上一次的降档 → 真实任务在 `thinking: disabled` 下运行**（质量事故）：先发「你好」立即降到 `off`，接着发一条几百字的批改任务，Jev 判 `low` 但置信度 0.45 < 门槛 → 弃权 → 档位**留在 off**。改为：降档必须由「对当前这条消息的判定」持续支撑，弃权时撤销上一次的降档、回退到 harness 默认（并绕过迟滞，因为这是安全方向的修正） |
+| 2026-09-25 | v0.1.0 | 修复 | 新增 `offFloorChars`（默认 280）：长消息不得被判为「琐碎」。针对 Jev 官方声明的 CJK 准确率较低——长中文请求被判 `off` 是已知高风险组合 |
 | 2026-09-25 | v0.1.0 | 修复 | **DSH 原生档位指示器永不跟随**：Tier A 只改单次调用的 `reasoningEffort`，而原生「模型后面的思考程度」读的是**会话配置**——所以界面永远停在会话设置上，用户完全看不到插件在工作。新增 `syncSessionEffort`（默认开）：档位变化时追加 `model/selection`（内置选择器走的同一条通道，字段规范 `disposition(["provider","model"], ["reasoningEffort"])`），原生界面随之更新。同步失败会记录到诊断，不静默 |
 | 2026-09-25 | v0.1.0 | 修复 | **占位徽章有写全局配置的副作用**：会话未就绪时显示 `⚡ ?` 的那个按钮，其 `onClick` 会把**全局**手动档位从 `auto` **改成下一档**（通常是 `off`）。点一下就让所有会话进入 `manual-override`、Jev 判定被完全绕过，现象是「思考强度完全不变化」。占位符改为 `disabled` 且**绝不带 onClick** |
 | 2026-09-25 | v0.1.0 | 体验 | 手动档位时徽章用 **🔒** 区分（自动为 ⚡），并在 title 里说明「Jev 自动判定已被绕过；点一下回到 auto」；点击语义改为**手动时一次点击直接回 auto**，不再继续往下降档 |
