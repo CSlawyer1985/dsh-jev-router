@@ -158,6 +158,12 @@ Tier B 的五道闸只算**缓存代价**，完全没有检查「目标模型装
 3. `lib/index.js`：`usedTokens` 取当前 prompt 规模（`metrics.lastStep.inputTokens + cacheReadTokens`，与快照里的 `estimatePrefixTokens` 同一口径）。
 4. `lib/config.js` + 设置页：`contextSafetyMargin`（默认 0.05）可调。
 
+### 关于 272K 与 1.05M（更正）
+
+此前把 `openai-codex` 目录里的 `contextWindow: 272000` 泛化成「GPT-5.6 模型硬上限」，这是错误的。核对同一 pi-ai 目录：`openai-codex` / `openai` 条目是 272K，而 OpenRouter / Vercel / Azure / Bedrock / Copilot 等条目是 1.05M；Kiro 官方 changelog 写明 Sol/Terra/Luna 从 272K 升级到 1M，并明确 272K 是长上下文计价分界；Simon Willison 的 GPT-5.6 发布记录也写明三款模型为 1M context。
+
+因此当前闸的语义是：**防止未命中 input 超过当前 provider/路径报告的有效窗口**，不是声称模型原生只有 272K。热缓存 token 由 provider 的缓存路径单独处理，不能简单与 input 相加后当作 overflow 容量。
+
 ### 为什么留 5% 余量
 
 ① token 估计本身不精确；② 下一轮还会增长（新消息、工具输出）。272K 窗口下约留 13.6K。设为 0 表示用满窗口。
@@ -166,4 +172,4 @@ Tier B 的五道闸只算**缓存代价**，完全没有检查「目标模型装
 
 我差点让这道闸**静默失效**：pi-ai 的模型对象把 `contextWindow` 放在**顶层**，而 DSH 契约要求的是 `context.contextWindow`。若不核对中间的映射，闸会永远读到 `null`、永远放行——又是一个"看着在工作、实际从未生效"。核对结果：`dsh-llm-pi-ai` 里确有该映射，字段路径正确。
 
-测试 191 → 200 项（+6 策略：真实 556K/272K 拒绝、同会话 1.05M 放行、余量生效、余量 0 用满、元数据缺失不拦、窗口闸排在粘滞前；+2 集成：端到端拒绝与放行；+1 前端：设置页暴露该可调项）。
+测试 191 → 201 项（+6 策略：真实 556K/272K 拒绝、同会话 1.05M 放行、余量生效、余量 0 用满、元数据缺失不拦、窗口闸排在粘滞前；+2 集成：端到端拒绝与放行；+1 前端：设置页暴露该可调项）。

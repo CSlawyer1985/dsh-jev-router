@@ -433,7 +433,7 @@ outputTokens     =     532,830
 | `modelAllowlist` | `[]` | 候选模型。裸 id = 当前 provider；`provider::model` = 跨 provider（用双冒号，因为真实模型 id 里就有斜杠与冒号） |
 | `modelNotes` | `[]` | `"模型id: 说明"`，作为 Jev 的 criteria 描述 |
 | `customPricing` | `[]` | 非 DeepSeek 模型的自备价目：`"provider::model=命中,未命中,输出"`（USD/1M） |
-| `contextSafetyMargin` | `0.05` | 切换模型前的**上下文窗口安全余量**（比例）。比较「当前会话已用 token」与「目标模型窗口 ×(1−余量)」，装不下就拒绝——因为那会让请求**必然失败**（实测：556K 会话切到 272K 窗口的模型被 provider 直接拒绝）。`0` = 用满窗口 |
+| `contextSafetyMargin` | `0.05` | 切换模型前的**上下文窗口安全余量**（比例）。比较「当前请求的**未命中 inputTokens**」与「目标模型窗口 ×(1−余量)」，装不下就拒绝；热缓存的 `cacheReadTokens` 由 provider 缓存路径单独处理。`0` = 不留余量 |
 | `stickyRounds` | `3` | 候选需连续胜出轮数 |
 | `switchCooldown` | `2` | 两次切换最小间隔轮数 |
 | `maxSwitchesPerSession` | `2` | 单会话切换上限 |
@@ -562,7 +562,7 @@ dsh-jev-router/
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 199 项测试（11 个文件，分六层）
+├── test/                    # 201 项测试（11 个文件，分六层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -573,7 +573,7 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 199 项
+node --test test/*.test.js      # 201 项
 
 # 拿真实消息测 Jev 的判定质量（需要已配置 Key）
 node scripts/try-jev.mjs                    # 内置样例集
@@ -698,7 +698,8 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 2026-09-25 | v0.1.0 | 修复 | **`showBadge` 是个死开关**：徽章无条件注册，该配置只在设置页的开关上被读、从未参与判断，所以"关掉徽章"无效。改为注册一个自取状态的包装组件，`showBadge === false` 时返回 `null`，设置一改立即生效 |
 | 2026-09-25 | v0.1.0 | 修复 | **弃权会保留上一次的降档 → 真实任务在 `thinking: disabled` 下运行**（质量事故）：先发「你好」立即降到 `off`，接着发一条几百字的批改任务，Jev 判 `low` 但置信度 0.45 < 门槛 → 弃权 → 档位**留在 off**。改为：降档必须由「对当前这条消息的判定」持续支撑，弃权时撤销上一次的降档、回退到 harness 默认（并绕过迟滞，因为这是安全方向的修正） |
 | 2026-09-25 | v0.1.0 | 修复 | 新增 `offFloorChars`（默认 280）：长消息不得被判为「琐碎」。针对 Jev 官方声明的 CJK 准确率较低——长中文请求被判 `off` 是已知高风险组合 |
-| 2026-09-25 | v0.1.0 | 新增 | **模型路由的上下文窗口闸**（`context-too-large`）：原先五道闸只算缓存代价，完全没检查「目标模型装不装得下当前会话」。实测事故——一个已累积 556K token 的会话切到窗口 272K 的模型，请求被 provider 直接拒绝（`CONTEXT_WINDOW_EXCEEDED`）。现在从 `llm.resolveModelInfo` 读 `context.contextWindow`，与当前会话已用 token 比较，超出窗口×(1−`contextSafetyMargin`) 即拒绝。这道闸排在成本闸之前：**缓存代价是花钱，窗口不够是请求必然失败** |
+| 2026-09-25 | v0.1.0 | 更正 | **GPT-5.6 的 1.05M 与 Codex 的 272K 不是同一个概念**：同一 pi-ai 目录里，openai-codex/openai 条目写 272K，而 OpenRouter / Vercel / Azure / Bedrock / Copilot 等条目写 1.05M；外部资料也明确 272K 是长上下文计价分界。此前把 272K 误称为模型硬上限，现已更正 |
+| 2026-09-25 | v0.1.0 | 修复 | **模型路由的上下文窗口闸**（`context-too-large`）：原先五道闸只算缓存代价，完全没检查「目标模型装不装得下当前会话」。实测事故——一个已累积 556K token 的会话切到窗口 272K 的模型，请求被 provider 直接拒绝（`CONTEXT_WINDOW_EXCEEDED`）。现在从 `llm.resolveModelInfo` 读 `context.contextWindow`，与当前会话已用 token 比较，超出窗口×(1−`contextSafetyMargin`) 即拒绝。这道闸排在成本闸之前：**缓存代价是花钱，窗口不够是请求必然失败** |
 | 2026-09-25 | v0.1.0 | 修复 | **判定缺失时会绕过降档确认**：早先 `no-decision` 沿用上一轮判定，`carry-downgrade` 会直接降档——它比 `low-confidence`（Jev 至少还答了）更不确定却更激进。改为与弃权一致：判定缺失只撤销未被支撑的降档，绝不据此降档；顺带删掉只写不读的死代码 `streak`/`lastDecided` |
 | 2026-09-25 | v0.1.0 | 修复 | **inbox hook 把合成消息也发给 Jev**：`agent/inbox/inserted` 对每一条消息触发，实测会混入 goal 轮次、审批变更、tool-jobs 通知等（整段会话 `inserted` 的 source.kind 分布：user 30 / goal 3 / user-approval 1 / tool-jobs 1 / tool-goal 1），它们既浪费 Jev 调用，又与用户消息竞态覆盖决策。改为只分类 `source.kind === 'user'` 的真实用户输入（source 缺失时保守不跳过），新增 `inboxStats` 诊断 |
 | 2026-09-25 | v0.1.0 | 修复 | **setConfig 切断 volatile 引用**：`Object.assign(live, patch)` 把 `Object.freeze({get,[write]})` 引用替换成普通值，之后用户在 DSH 通用设置页改同一字段插件读到旧值。移除该赋值（`settings.update` 已通过 write 符号写回，`readConfig` 每次 `.get()` 即最新） |

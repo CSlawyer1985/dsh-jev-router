@@ -1705,3 +1705,11 @@ test('同一个大会话切到 1.05M 窗口的模型则允许（窗口差异决�
     fetchStub.restore();
   }
 });
+
+test('上下文闸使用未命中 inputTokens，不误拦热缓存长上下文', async () => {
+  const mod = await import('../lib/index.js');
+  const { estimatePrefixTokens, estimateUncachedTokens } = mod.__test__;
+  const metrics = { lastStep: { inputTokens: 57682, cacheReadTokens: 552448 } };
+  assert.equal(estimatePrefixTokens(metrics), 610130, '成本闸仍看完整前缀规模');
+  assert.equal(estimateUncachedTokens(metrics), 57682, '上下文闸看未命中 input');
+});
