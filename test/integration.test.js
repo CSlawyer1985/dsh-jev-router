@@ -542,7 +542,7 @@ test('集成：POST /jev-router/config 拒绝跨站来源', async () => {
   assert.equal(host.settingsUpdates.length, 0, '跨站请求不得产生写操作');
 });
 
-test('集成：四类路由全部注册', async () => {
+test('集成：五类路由全部注册', async () => {
   const { host } = await mount();
   const paths = [...host.registeredRoutes.keys()].sort();
   assert.deepEqual(paths, [
@@ -550,6 +550,7 @@ test('集成：四类路由全部注册', async () => {
     '/jev-router/credential',
     '/jev-router/pricing/refresh',
     '/jev-router/status',
+    '/jev-router/test',
   ]);
 });
 
@@ -1073,4 +1074,88 @@ test('回归：agent/disposed 不得清空会话状态（同一 agent id 复用�
     assert.equal(body.diagnostics.sessionsCreated, 1);
     assert.equal(body.diagnostics.sessionsEvicted, 0);
   })();
+});
+
+// ── 连通测试路由 ────────────────────────────────────────────
+test('连通测试：Key 可用时返回接通信息', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.9) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const route = host.registeredRoutes.get('/jev-router/test');
+    const response = fakeResponse();
+
+    await route.handler(fakeRequest({ method: 'POST', headers: {} }), response);
+
+    assert.equal(response.captured.status, 200);
+    const body = JSON.parse(response.captured.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.effort, 'low');
+    assert.equal(body.jevModel, 'jev-1.13.0');
+    assert.ok(typeof body.elapsedMs === 'number');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('连通测试：没有 Key 时明确报未配置，且不发网络请求', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low') });
+  try {
+    const { host } = await mount({}, { apiKey: null });
+    const route = host.registeredRoutes.get('/jev-router/test');
+    const response = fakeResponse();
+
+    await route.handler(fakeRequest({ method: 'POST', headers: {} }), response);
+
+    assert.equal(response.captured.status, 502);
+    const body = JSON.parse(response.captured.body);
+    assert.equal(body.ok, false);
+    assert.match(body.reason, /未配置/);
+    assert.equal(fetchStub.calls.length, 0, '未配置时不得发请求');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('连通测试：请求失败时报「未接通」而不是假装成功', async () => {
+  const fetchStub = stubFetch({ jevOk: false });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const route = host.registeredRoutes.get('/jev-router/test');
+    const response = fakeResponse();
+
+    await route.handler(fakeRequest({ method: 'POST', headers: {} }), response);
+
+    assert.equal(response.captured.status, 502);
+    assert.equal(JSON.parse(response.captured.body).ok, false);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('连通测试：拒绝跨站来源', async () => {
+  const { host } = await mount({}, { apiKey: API_KEY });
+  const route = host.registeredRoutes.get('/jev-router/test');
+  const response = fakeResponse();
+
+  await route.handler(
+    fakeRequest({ method: 'POST', headers: { origin: 'https://evil.example', host: '127.0.0.1:19387' } }),
+    response,
+  );
+
+  assert.equal(response.captured.status, 403);
+});
+
+test('状态快照必须公开全部可调字段（否则设置页没有可调项）', async () => {
+  const { host } = await mount();
+  const route = host.registeredRoutes.get('/jev-router/status');
+  const response = fakeResponse();
+  await route.handler(fakeRequest({ method: 'GET' }), response);
+
+  const cfg = JSON.parse(response.captured.body).config;
+  for (const key of ['riskCeiling', 'confidenceFloor', 'hysteresisRounds', 'downgradeStreak', 'timeoutMs', 'fallbackEffort']) {
+    assert.ok(key in cfg, `status.config 缺少可调字段：${key}`);
+  }
+  assert.equal(typeof cfg.riskCeiling, 'number', 'volatile 字段必须已拆包为裸值');
+  assert.equal(typeof cfg.confidenceFloor, 'number');
+  assert.equal(cfg.riskCeiling, 0.6);
 });

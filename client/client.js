@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
     const STATUS_URL = "/jev-router/status";
     const CONFIG_URL = "/jev-router/config";
     const CREDENTIAL_URL = "/jev-router/credential";
+    const TEST_URL = "/jev-router/test";
     const REFRESH_URL = "/jev-router/pricing/refresh";
     const CYCLE = ["auto", "off", "low", "high", "max"];
 
@@ -57,6 +58,15 @@ window.__ModuleLoader__.load({
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
+        return await response.json();
+      } catch (error) {
+        return { ok: false, error: String(error && error.message ? error.message : error) };
+      }
+    }
+
+    async function postTest() {
+      try {
+        const response = await fetch(TEST_URL, { method: "POST" });
         return await response.json();
       } catch (error) {
         return { ok: false, error: String(error && error.message ? error.message : error) };
@@ -105,6 +115,27 @@ window.__ModuleLoader__.load({
       label: { fontSize: 13, flex: "1 1 auto" },
       hint: { fontSize: 11, opacity: 0.65, lineHeight: 1.5, marginTop: 4 },
       grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10 },
+      num: {
+        width: 74,
+        fontSize: 12,
+        padding: "4px 7px",
+        borderRadius: 6,
+        border: "1px solid color-mix(in srgb, currentColor 25%, transparent)",
+        background: "transparent",
+        color: "inherit",
+        textAlign: "right",
+        flex: "0 0 auto",
+      },
+      select: {
+        fontSize: 12,
+        padding: "4px 6px",
+        borderRadius: 6,
+        border: "1px solid color-mix(in srgb, currentColor 25%, transparent)",
+        background: "transparent",
+        color: "inherit",
+        flex: "0 0 auto",
+      },
+      sub: { fontSize: 12, fontWeight: 600, opacity: 0.8, margin: "12px 0 4px" },
       metric: { padding: "8px 10px", borderRadius: 8, background: "color-mix(in srgb, currentColor 7%, transparent)" },
       metricLabel: { fontSize: 11, opacity: 0.7 },
       metricValue: { fontSize: 16, fontWeight: 600, marginTop: 2 },
@@ -139,6 +170,54 @@ window.__ModuleLoader__.load({
       },
       author: { fontSize: 11, opacity: 0.7, marginTop: 10, lineHeight: 1.6 },
     };
+
+    /**
+     * 数字输入。失焦或回车才提交——避免每敲一个字符就写一次设置。
+     * 本地值允许在编辑期间存在（比如把 "2" 清空准备输 "10"）。
+     */
+    function NumberField({ value, min, max, step, onCommit, disabled }) {
+      const [draft, setDraft] = React.useState(String(value));
+      React.useEffect(() => setDraft(String(value)), [value]);
+      const commit = () => {
+        const n = Number(draft);
+        if (!Number.isFinite(n)) {
+          setDraft(String(value));
+          return;
+        }
+        const clamped = Math.min(max === undefined ? Infinity : max, Math.max(min === undefined ? -Infinity : min, n));
+        setDraft(String(clamped));
+        if (clamped !== value) onCommit(clamped);
+      };
+      return h("input", {
+        type: "number",
+        value: draft,
+        min,
+        max,
+        step: step === undefined ? 1 : step,
+        disabled,
+        style: S.num,
+        onChange: (event) => setDraft(event.target.value),
+        onBlur: commit,
+        onKeyDown: (event) => {
+          if (event.key === "Enter") commit();
+        },
+      });
+    }
+
+    /** 数字行：标签 + 说明 + 输入框 */
+    function NumberRow({ label, hint, value, min, max, step, onCommit, disabled }) {
+      return h(
+        "div",
+        null,
+        h(
+          "div",
+          { style: S.row },
+          h("span", { style: S.label }, label),
+          h(NumberField, { value, min, max, step, onCommit, disabled }),
+        ),
+        hint ? h("div", { style: S.hint }, hint) : null,
+      );
+    }
 
     function Toggle({ on, onChange, disabled }) {
       return h("button", {
@@ -212,6 +291,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [message, setMessage] = React.useState("");
       const [refreshing, setRefreshing] = React.useState(false);
+      // 只暴露"有没有配"，不暴露任何 Key 内容。
+      const credentialConfigured = Boolean(status && status.credential && status.credential.configured);
 
       const config = (status && status.config) || {};
       const metrics = (status && status.metrics) || {};
@@ -247,7 +328,9 @@ window.__ModuleLoader__.load({
         "div",
         null,
 
-        // Jev API Key
+        // Jev API Key —— 一行三按钮：一个输入框 + 保存 / 连通 / 清除。
+        // 密钥只以密文形式存在，永不回显：写入后输入框立即清空，
+        // 状态只显示「已配置 / 未配置」，不含任何 Key 字符。
         h(
           "div",
           { style: S.card },
@@ -255,31 +338,17 @@ window.__ModuleLoader__.load({
           h(
             "div",
             { style: S.row },
-            h(
-              "span",
-              { style: S.label },
-              "凭据 " + ((status && status.credential && status.credential.ref) || "TYPESAFE_API_KEY"),
-            ),
-            h(
-              "span",
-              { style: { fontSize: 12, fontWeight: 600, color: status && status.credential && status.credential.configured ? "#2f9e44" : "#e0a020" } },
-              status && status.credential && status.credential.configured
-                ? "已配置" + (status.credential.source ? "（来源 " + status.credential.source + "）" : "")
-                : "未配置 → 当前走关键词回退",
-            ),
-          ),
-          h(
-            "div",
-            { style: S.row },
             h("input", {
               type: "password",
               value: apiKey,
-              placeholder: "粘贴 TypeSafe API Key（console.typesafe.ai）",
+              placeholder: credentialConfigured ? "已配置（输入新 Key 可覆盖）" : "粘贴 TypeSafe API Key",
               autoComplete: "off",
+              autoCorrect: "off",
               spellCheck: false,
               onChange: (event) => setApiKey(event.target.value),
               style: {
                 flex: "1 1 auto",
+                minWidth: 0,
                 fontSize: 12,
                 padding: "5px 8px",
                 borderRadius: 6,
@@ -298,12 +367,13 @@ window.__ModuleLoader__.load({
                   setBusy(true);
                   const result = await postCredential({ value: apiKey });
                   setBusy(false);
-                  if (result && result.ok) {
-                    setApiKey("");
-                    setMessage("Key 已写入 DSH 凭据存储，下一次判定即生效（无需重启）。");
-                  } else {
-                    setMessage("保存失败：" + ((result && (result.reason || result.error)) || "未知错误"));
-                  }
+                  // 无论成功与否都清空输入框：密钥不在界面上停留。
+                  setApiKey("");
+                  setMessage(
+                    result && result.ok
+                      ? "已保存，立即生效。"
+                      : "保存失败：" + ((result && (result.reason || result.error)) || "未知错误"),
+                  );
                   reload();
                 },
               },
@@ -317,9 +387,41 @@ window.__ModuleLoader__.load({
                 disabled: busy,
                 onClick: async () => {
                   setBusy(true);
+                  const result = await postTest();
+                  setBusy(false);
+                  if (result && result.ok) {
+                    setMessage(
+                      "已接通 · " +
+                        result.jevModel +
+                        " · " +
+                        result.effort +
+                        "（置信度 " +
+                        (result.confidence === null || result.confidence === undefined
+                          ? "—"
+                          : Number(result.confidence).toFixed(2)) +
+                        "） · " +
+                        result.elapsedMs +
+                        "ms",
+                    );
+                  } else {
+                    setMessage("未接通：" + ((result && (result.reason || result.error)) || "未知错误"));
+                  }
+                },
+              },
+              "连通",
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                style: S.button,
+                disabled: busy,
+                onClick: async () => {
+                  setBusy(true);
                   const result = await postCredential({ clear: true });
                   setBusy(false);
-                  setMessage(result && result.ok ? "已清除凭据。" : "清除失败：" + ((result && (result.reason || result.error)) || "未知错误"));
+                  setApiKey("");
+                  setMessage(result && result.ok ? "已清除。" : "清除失败：" + ((result && (result.reason || result.error)) || "未知错误"));
                   reload();
                 },
               },
@@ -329,7 +431,8 @@ window.__ModuleLoader__.load({
           h(
             "div",
             { style: S.hint },
-            "密钥经 DSH 的 credentials 写入管理存储，不会出现在 profile 配置文件里。若解析到的来源是进程环境变量，写入会被拒绝（只读层遮蔽可写层）——那种情况请改用 $DSH_HOME/.env 或去掉环境变量。",
+            (credentialConfigured ? "状态：已配置" : "状态：未配置（当前走关键词回退）") +
+              "。密钥写入 DSH 凭据存储，不会出现在配置文件里，也不会回显。",
           ),
         ),
 
@@ -414,6 +517,131 @@ window.__ModuleLoader__.load({
             { style: S.hint },
             "只改 reasoningEffort，不碰模型、不碰 prompt 前缀，因此不破坏前缀缓存。手动值永远压过自动判定。",
           ),
+
+          // ── 调参（全部可调项都在这里，不必去 DSH 通用设置里找）──
+          h("div", { style: S.sub }, "判定与时机"),
+          h(NumberRow, {
+            label: "置信度门",
+            hint: "Jev 置信度低于此值就弃权，沿用当前档位。实测「一个星期几天」为 0.40、「你好」为 1.00。",
+            value: config.confidenceFloor,
+            min: 0,
+            max: 1,
+            step: 0.05,
+            onCommit: (v) => apply({ confidenceFloor: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "低代价降档上界（riskCeiling）",
+            hint: "Jev 的出错代价（0-3）不超过此值时，降档立即生效、不等确认；超过则仍要连续确认。实测「你好」0.00、「JSON 格式化」0.30、「重构架构」2.24。",
+            value: config.riskCeiling,
+            min: 0,
+            max: 3,
+            step: 0.1,
+            onCommit: (v) => apply({ riskCeiling: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "降档连续确认轮数",
+            hint: "只作用于「高错误代价」的降档。设为 1 表示一律立即降档。",
+            value: config.downgradeStreak,
+            min: 1,
+            max: 10,
+            onCommit: (v) => apply({ downgradeStreak: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "迟滞窗口（轮）",
+            hint: "距上次换档不足这么多轮就不动，防止档位高频横跳。",
+            value: config.hysteresisRounds,
+            min: 0,
+            max: 20,
+            onCommit: (v) => apply({ hysteresisRounds: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "判定超时（毫秒）",
+            hint: "超时就放弃本轮判定，绝不阻塞你的请求。实测中位耗时约 430ms。",
+            value: config.timeoutMs,
+            min: 200,
+            max: 20000,
+            step: 100,
+            onCommit: (v) => apply({ timeoutMs: v }),
+            disabled: busy,
+          }),
+          h(
+            "div",
+            { style: S.row },
+            h("span", { style: S.label }, "关键词回退默认档位"),
+            h(
+              "select",
+              {
+                style: S.select,
+                value: config.fallbackEffort,
+                disabled: busy,
+                onChange: (event) => apply({ fallbackEffort: event.target.value }),
+              },
+              ["off", "low", "high", "max"].map((v) => h("option", { key: v, value: v }, v)),
+            ),
+          ),
+          h(
+            "div",
+            { style: S.row },
+            h("span", { style: S.label }, "首步等待判定（关掉可降低首字延迟）"),
+            h(Toggle, {
+              on: config.blockOnDecision !== false,
+              disabled: busy,
+              onChange: (value) => apply({ blockOnDecision: value }),
+            }),
+          ),
+          h(
+            "div",
+            { style: S.row },
+            h("span", { style: S.label }, "输入框档位徽章"),
+            h(Toggle, {
+              on: config.showBadge !== false,
+              disabled: busy,
+              onChange: (value) => apply({ showBadge: value }),
+            }),
+          ),
+
+          h("div", { style: S.sub }, "模型路由参数"),
+          h(NumberRow, {
+            label: "候选连续胜出轮数（stickyRounds）",
+            hint: "防止模型在候选间来回切换。",
+            value: config.stickyRounds,
+            min: 1,
+            max: 10,
+            onCommit: (v) => apply({ stickyRounds: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "切换冷却（轮）",
+            hint: "两次模型切换之间的最小间隔。",
+            value: config.switchCooldown,
+            min: 0,
+            max: 20,
+            onCommit: (v) => apply({ switchCooldown: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "单会话切换上限",
+            hint: "超过后本会话不再自动切模型。",
+            value: config.maxSwitchesPerSession,
+            min: 0,
+            max: 20,
+            onCommit: (v) => apply({ maxSwitchesPerSession: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
+            label: "命中率告警阈值",
+            hint: "窗口命中率跌破此值时提示你考虑 /jev rollback。",
+            value: config.hitRateAlert,
+            min: 0,
+            max: 1,
+            step: 0.05,
+            onCommit: (v) => apply({ hitRateAlert: v }),
+            disabled: busy,
+          }),
         ),
 
         // Tier B

@@ -304,13 +304,15 @@ test('设置页能真正渲染出来（无引用错误），并包含全部关�
     assert.match(text, /chenshi\.ai/, '缺失作者署名');
     assert.match(text, /命中率/, '缺失命中率指标');
     assert.match(text, /Jev API Key/, '缺失 Key 配置区块');
-    assert.match(text, /TYPESAFE_API_KEY/, '缺失凭据名提示');
-    // 输入框的 placeholder 是 prop 不是文本子节点，用源码断言更准确
-    assert.match(
-      stripComments(readFileSync(join(ROOT, 'client/client.js'), 'utf8')),
-      /console\.typesafe\.ai/,
-      '缺失获取 Key 的指引',
-    );
+    // 一行三按钮：保存 / 连通 / 清除
+    assert.match(text, /保存/);
+    assert.match(text, /连通/);
+    assert.match(text, /清除/);
+    // 密钥永不回显：渲染结果里不得出现任何 Key 内容，也不得出现凭据名以外的键值
+    assert.ok(!/ts_[A-Za-z0-9]/.test(text), '渲染结果里不得出现 Key 本体');
+    assert.match(text, /不会回显/, '应当告知用户密钥不回显');
+    // 极简版刻意不在界面上堆说明文字；申请入口放在 README 的「使用」一节。
+    assert.match(text, /DSH 凭据存储/, '应当说明密钥存放在哪里');
   } finally {
     restoreWarn();
   }
@@ -367,4 +369,37 @@ test('前端半：槽位注册必须走 slots.inject（不能裸 register）', (
     !/slots\.register\(\s*\{\s*name:\s*"settings\.section"/.test(source),
     '不得裸调 register —— 槽位未声明时会抛错并让 DSH 起不来',
   );
+});
+
+test('设置页必须暴露全部可调项，而不是只给几个开关', () => {
+  // 用户的实际反馈：「设置页没有可以调整的地方」。
+  // 根因之一就是页面只渲染了 4 个控件，其余配置项在插件页里根本不存在。
+  const { mod, ctx, slotStub, restoreWarn } = loadClientModule({
+    declaredSlots: ['settings.section', 'conversation.input.left'],
+  });
+  let text;
+  try {
+    mod.apply(ctx);
+    const section = slotStub.registrations.find((r) => r.declaration.name === 'settings.section');
+    text = textOf(section.render()).join(' | ');
+  } finally {
+    restoreWarn();
+  }
+  const tunable = [
+    '置信度门',
+    '低代价降档上界',
+    '降档连续确认轮数',
+    '迟滞窗口',
+    '判定超时',
+    '关键词回退默认档位',
+    '首步等待判定',
+    '输入框档位徽章',
+    '候选连续胜出轮数',
+    '切换冷却',
+    '单会话切换上限',
+    '命中率告警阈值',
+  ];
+  for (const label of tunable) {
+    assert.ok(text.includes(label), `设置页缺少可调项：${label}`);
+  }
 });
