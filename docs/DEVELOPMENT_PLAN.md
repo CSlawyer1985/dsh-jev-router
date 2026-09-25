@@ -106,3 +106,19 @@ node scripts/probe-frontend.mjs "http://127.0.0.1:19488/?token=$TOKEN" 15000
 - **`jev_decide` 工具**：让模型自己调用 Jev 做判定。规划中，未实现。
 - **`conversation.chat.commandview` 渲染器**：目前判定解释走 `/jev why` 的文本输出；可进一步做成富渲染的命令行。
 - **自定义 Session 事件类型**：`SessionEventMap` 是固定表，第三方插件无法新增事件类型，因此判定记录走「命令 + 文本」而非自定义事件。
+
+---
+
+## 全量自测（第四轮，2026-09-25 晚）
+
+这一轮做了一次系统性的逐文件通读 + 定向测试，找出并修复了三个真实缺陷，全部是「不报错、测试一度全绿、功能看着在工作」的类型：
+
+| 编号 | 缺陷 | 根因 | 影响 | 修复 |
+|---|---|---|---|---|
+| 13 | `no-decision` 绕过降档确认 | 沿用上一轮判定（`carry-downgrade`），比 `low-confidence` 更不确定却更激进，且绕过了 `downgradeStreak` 连续确认 | 判定失败时可能瞬间降档，削弱"防一次误判"保护 | 与弃权统一：只撤销未被支撑的降档，绝不据此降档；删除只写不读的 `streak`/`lastDecided` |
+| 14 | inbox 把合成消息发给 Jev | `agent/inbox/inserted` 对每条消息触发，含 workspace 指令、runtime-context 快照、goal 轮次、审批变更 | ①浪费 Jev 调用 ②与用户消息竞态覆盖 `entry.decision`，决策对象非确定 | 只分类 `source.kind === 'user'`（source 缺失时保守不跳过）；新增 `inboxStats` 诊断 |
+| 15 | `setConfig` 切断 volatile 引用 | `Object.assign(live, patch)` 把 `Object.freeze({get,[write]})` 替换成普通值 | 之后用户在 DSH 通用设置页改同一字段，插件读到旧值（静默失配） | 移除该赋值；`settings.update` 已通过 write 符号写回，`readConfig` 每次 `.get()` 即最新 |
+
+**方法收获**：这三个 bug 没有一个能从「跑测试」里发现——它们需要**逐文件读源码 + 用真实宿主数据核对**。特别是 #14，靠的是把会话日志里 `user/message` 的 `source.kind` 字段打出来对比，才发现 inbox 里混进了 runtime-context 快照。这再次印证：**可观测性（把真实数据打出来）比任何推理都可靠。**
+
+测试 188 → 191 项。

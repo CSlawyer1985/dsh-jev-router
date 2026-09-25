@@ -34,6 +34,9 @@ function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, 
     fallbackEffort: 'high',
     hysteresisRounds: 2,
     downgradeStreak: 2,
+    riskCeiling: 0.6,
+    syncSessionEffort: true,
+    offFloorChars: 280,
     timeoutMs: 1500,
     blockOnDecision: true,
     modelRouting: false,
@@ -41,23 +44,31 @@ function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, 
     modelSwitchMode: 'turn-boundary',
     modelAllowlist: [],
     modelNotes: [],
+    customPricing: [],
     stickyRounds: 3,
     switchCooldown: 2,
     maxSwitchesPerSession: 2,
     hitRateAlert: 0.8,
+    skillRouting: false,
     pricingAutoRefreshHours: 24,
     // 用临时目录，避免读到开发机上的真实缓存
     pricingCachePath: join(mkdtempSync(join(tmpdir(), 'jev-test-')), 'pricing.json'),
     holidays: [],
     showBadge: true,
     namespace: 'jev-router',
+    apiKeyRef: 'TYPESAFE_API_KEY',
     ...configOverrides,
   };
 
   // 真实宿主把 volatile 字段作为引用对象交给插件；volatileConfig 复刻这一形态。
+  // 与 cosmokit 一致：带 get 与 write 符号，且 settings.update 会通过 write 更新它。
+  const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write');
   const deliveredConfig = volatileConfig
     ? Object.fromEntries(
-        Object.entries(config).map(([key, value]) => [key, Object.freeze({ get: () => value })]),
+        Object.entries(config).map(([key, value]) => {
+          let current = value;
+          return [key, Object.freeze({ get: () => current, [VOLATILE_WRITE]: (v) => { current = v; } })];
+        }),
       )
     : config;
 
@@ -96,6 +107,13 @@ function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, 
           configure: () => () => {},
           update: async (ns, patch) => {
             settingsUpdates.push({ ns, patch });
+            // 模拟 DSH：settings.update 会通过 write 符号把值写回 volatile 引用，
+            // 于是插件的 readConfig 每次 .get() 都读到最新值。
+            for (const [key, value] of Object.entries(patch)) {
+              const w = deliveredConfig[key];
+              const write = w && w[Symbol.for('cosmokit.volatile.write')];
+              if (typeof write === 'function') write(value);
+            }
           },
         };
       }
@@ -1485,4 +1503,99 @@ test('同步失败必须留痕，不能静默', async () => {
   } finally {
     fetchStub.restore();
   }
+});
+
+// ── inbox：只分类真正的用户消息 ─────────────────────────────
+test('回归：合成消息（runtime-context / 指令等）不得被分类或发给 Jev', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.9) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+
+    // 合成消息：runtime-context 快照、workspace 指令等也进 inbox
+    for (const kind of ['runtime-context', 'agent-instructions', 'goal', 'tool-jobs', 'user-approval']) {
+      emit(host, 'agent/inbox/inserted', {
+        agent: { id: 'synth-1' },
+        message: { content: `synthetic ${kind} …`, source: { kind } },
+      });
+    }
+    // skip 分支是同步的，此时不该有任何 Jev 调用
+    assert.equal(
+      fetchStub.calls.filter((c) => c.url.includes('api.typesafe.ai')).length,
+      0,
+      '合成消息不得发给 Jev（既浪费调用又竞态覆盖决策）',
+    );
+
+    // 真正的用户消息
+    emit(host, 'agent/inbox/inserted', {
+      agent: { id: 'synth-1' },
+      message: { content: '你好', source: { kind: 'user' } },
+    });
+    await waterfall(host, 'agent/request', { agent: { id: 'synth-1' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+    assert.equal(
+      fetchStub.calls.filter((c) => c.url.includes('api.typesafe.ai')).length,
+      1,
+      '真正的用户消息应被分类一次',
+    );
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(
+      fakeRequest({ method: 'GET', url: '/jev-router/status?session=synth-1' }),
+      res,
+    );
+    const body = JSON.parse(res.captured.body);
+    assert.equal(body.diagnostics.inboxStats.skippedSynthetic, 5);
+    assert.equal(body.diagnostics.inboxStats.classified, 1);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('防御：message.source 缺失时仍分类（老 harness 兼容）', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.9) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    emit(host, 'agent/inbox/inserted', {
+      agent: { id: 'nosrc-1' },
+      message: { content: '没有 source 字段的消息' },
+    });
+    await waterfall(host, 'agent/request', { agent: { id: 'nosrc-1' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+    assert.equal(
+      fetchStub.calls.filter((c) => c.url.includes('api.typesafe.ai')).length,
+      1,
+      'source 缺失时不得跳过分类',
+    );
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+// ── setConfig 不得切断 volatile 引用 ─────────────────────────
+test('回归：setConfig 不得把 volatile 引用替换成普通值', async () => {
+  // 真实事故：Object.assign(live, patch) 会把 volatile 字段的
+  // Object.freeze({get,[write]}) 引用替换成普通字符串/布尔，
+  // 永久切断它与 settings 系统的连接——之后用户在 DSH 通用设置页
+  // 改动同一字段，插件读到的是旧值。
+  const { host } = await mount({}, { apiKey: API_KEY, volatileConfig: true });
+
+  const route = host.registeredRoutes.get('/jev-router/config');
+  const res = fakeResponse();
+  await route.handler(
+    fakeRequest({ method: 'POST', body: JSON.stringify({ patch: { effort: 'low', riskCeiling: 0.8 } }), headers: {} }),
+    res,
+  );
+  assert.equal(JSON.parse(res.captured.body).ok, true);
+
+  // host.config 是交付给 apply 的对象（live）；effort 必须仍是 volatile 引用
+  assert.equal(typeof host.config.effort.get, 'function', 'effort 不得被替换成普通值');
+  assert.equal(typeof host.config.riskCeiling.get, 'function', 'riskCeiling 不得被替换成普通值');
+
+  // 值也要被 settings.update 写回（模拟 DSH 通用设置页后续改动）
+  const write = host.config.effort[Symbol.for('cosmokit.volatile.write')];
+  assert.equal(typeof write, 'function');
+  write('max');
+  assert.equal(host.config.effort.get(), 'max', 'volatile 引用必须仍是活的：写回后 .get() 反映新值');
 });

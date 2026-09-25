@@ -269,33 +269,35 @@ test('升档不受 riskCeiling 影响（本来就不需要确认）', () => {
   assert.equal(verdict.reason, 'upgrade');
 });
 
-// ── 判定缺失时沿用上一个判定 ────────────────────────────────
-test('本轮没有判定但上一轮有 → 沿用上一轮的意图（降档）', () => {
+// ── 判定缺失：与 low-confidence 一致，只撤销未被支撑的降档 ──
+test('回归：判定缺失绝不能沿用上一轮降档（那会绕过连续确认）', () => {
+  // 早先的 carry-downgrade：上一轮判 low（高代价→挂起确认），
+  // 本轮 Jev 失败 → 直接降档，绕过了 downgradeStreak 的连续确认。
+  // 判定缺失比 low-confidence 更不确定，却更激进，逻辑矛盾。
   const state = createSessionState();
   state.effort = 'high';
-  state.lastDecided = 'low';
   state.roundsSinceEffortChange = Number.POSITIVE_INFINITY;
 
   const verdict = decideEffort({
     state, config: CONFIG, decided: null, confidence: 0,
     currentHarnessEffort: 'high',
   });
-  assert.equal(verdict.effort, 'low');
-  assert.equal(verdict.reason, 'carry-downgrade');
+  assert.equal(verdict.effort, 'high', '不得据此降档');
+  assert.equal(verdict.reason, 'no-decision');
+  assert.equal(verdict.changed, false);
 });
 
-test('沿用也受迟滞窗口约束', () => {
+test('回归：判定缺失时，若当前档位低于默认 → 撤销降档（回退）', () => {
   const state = createSessionState();
-  state.effort = 'high';
-  state.lastDecided = 'low';
-  state.roundsSinceEffortChange = 0;
+  state.effort = 'off';          // 之前降下来的
+  state.roundsSinceEffortChange = 0;  // 迟滞窗口内也不该挡住安全回退
 
   const verdict = decideEffort({
     state, config: CONFIG, decided: null, confidence: 0,
     currentHarnessEffort: 'high',
   });
   assert.equal(verdict.effort, 'high');
-  assert.equal(verdict.reason, 'hysteresis');
+  assert.equal(verdict.reason, 'abstain-restore');
 });
 
 test('从未有过判定且本轮也没有 → no-decision，保持不动', () => {
