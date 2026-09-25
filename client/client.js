@@ -670,6 +670,16 @@ window.__ModuleLoader__.load({
 
           h("div", { style: S.sub }, "模型路由参数"),
           h(NumberRow, {
+            label: "上下文窗口安全余量",
+            hint: "切换前比「当前会话已用 token」与「目标模型窗口 ×(1-余量)」，装不下就拒绝——那会让请求必然失败。实测：556K 会话切到 272K 窗口的模型直接被 provider 拒绝。0 = 用满窗口。",
+            value: config.contextSafetyMargin,
+            min: 0,
+            max: 0.5,
+            step: 0.01,
+            onCommit: (v) => apply({ contextSafetyMargin: v }),
+            disabled: busy,
+          }),
+          h(NumberRow, {
             label: "候选连续胜出轮数（stickyRounds）",
             hint: "防止模型在候选间来回切换。",
             value: config.stickyRounds,

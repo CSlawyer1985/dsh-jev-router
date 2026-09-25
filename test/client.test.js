@@ -400,6 +400,7 @@ test('设置页必须暴露全部可调项，而不是只给几个开关', () =>
     '切换冷却',
     '单会话切换上限',
     '命中率告警阈值',
+    '上下文窗口安全余量',
   ];
   for (const label of tunable) {
     assert.ok(text.includes(label), `设置页缺少可调项：${label}`);
@@ -444,4 +445,19 @@ test('回归：showBadge=false 必须真的不渲染徽章（这个开关曾是�
   const block = src.slice(i, i + 200);
   assert.match(block, /BadgeIfEnabled/, '注册处必须使用包装组件');
   assert.ok(!/h\(JevBadge/.test(block), '注册处不得直接渲染 JevBadge（会绕过开关）');
+});
+
+test('设置页必须暴露上下文窗口安全余量（新闸的可调项）', () => {
+  const { mod, ctx, slotStub, restoreWarn } = loadClientModule({
+    declaredSlots: ['settings.section', 'conversation.input.left'],
+  });
+  let text;
+  try {
+    mod.apply(ctx);
+    const section = slotStub.registrations.find((r) => r.declaration.name === 'settings.section');
+    text = textOf(section.render()).join(' | ');
+  } finally {
+    restoreWarn();
+  }
+  assert.match(text, /上下文窗口安全余量/, '设置页应能调这个新闸');
 });

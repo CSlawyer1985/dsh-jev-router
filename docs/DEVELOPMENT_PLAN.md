@@ -122,3 +122,48 @@ node scripts/probe-frontend.mjs "http://127.0.0.1:19488/?token=$TOKEN" 15000
 **方法收获**：这三个 bug 没有一个能从「跑测试」里发现——它们需要**逐文件读源码 + 用真实宿主数据核对**。特别是 #14，靠的是把会话日志里 `user/message` 的 `source.kind` 字段打出来对比，才发现 inbox 里混进了 runtime-context 快照。这再次印证：**可观测性（把真实数据打出来）比任何推理都可靠。**
 
 测试 188 → 191 项。
+
+---
+
+## 第五轮：上下文窗口闸（由真实运行事故驱动）
+
+真实事故（非构造）：
+
+```
+turn=40  provider=openai-codex  model=gpt-5.6-luna
+         prompt = 556,125 tokens      （本会话在 deepseek-flash 的 1M 窗口下累积）
+         目标模型窗口 = 272,000 tokens
+  → turn/end REASON={"kind":"error",
+       "error":{"message":"pi-ai detected context overflow for model \"gpt-5.6-luna\"",
+                "code":"CONTEXT_WINDOW_EXCEEDED"}}
+```
+
+### 缺陷
+
+Tier B 的五道闸只算**缓存代价**，完全没有检查「目标模型装不装得下当前会话」。而模型窗口差异极大：
+
+| 模型 | 窗口 |
+|---|---|
+| deepseek-account/deepseek-flash | 1,000,000 |
+| gpt-5.6-luna（经 openai-codex） | 272,000 |
+
+**会话越大越不能随便切到小窗口模型**——这不是"省钱没省成"，是**请求必然失败**。
+
+### 修复
+
+新增闸 `context-too-large`，排在成本闸之前（硬可行性优先）：
+
+1. `lib/model-caps.js`：`capabilities()` 除档位外，再读 `LlmResolvedModelInfo.context.contextWindow`（字段路径已核对：`dsh-llm-pi-ai` 里确有 `context: { contextWindow: resolvedModel.contextWindow }` 的映射），非法值一律归为 `null` 表示未知。
+2. `lib/policy.js`：`shouldSwitchModel` 接收 `targetContextWindow` 与 `usedTokens`，超出 `窗口 × (1 − contextSafetyMargin)` 即拒绝，并在裁决里带上 `usedTokens` / `targetContextWindow` / `usableTokens`。
+3. `lib/index.js`：`usedTokens` 取当前 prompt 规模（`metrics.lastStep.inputTokens + cacheReadTokens`，与快照里的 `estimatePrefixTokens` 同一口径）。
+4. `lib/config.js` + 设置页：`contextSafetyMargin`（默认 0.05）可调。
+
+### 为什么留 5% 余量
+
+① token 估计本身不精确；② 下一轮还会增长（新消息、工具输出）。272K 窗口下约留 13.6K。设为 0 表示用满窗口。
+
+### 一个必须记下的核对
+
+我差点让这道闸**静默失效**：pi-ai 的模型对象把 `contextWindow` 放在**顶层**，而 DSH 契约要求的是 `context.contextWindow`。若不核对中间的映射，闸会永远读到 `null`、永远放行——又是一个"看着在工作、实际从未生效"。核对结果：`dsh-llm-pi-ai` 里确有该映射，字段路径正确。
+
+测试 191 → 200 项（+6 策略：真实 556K/272K 拒绝、同会话 1.05M 放行、余量生效、余量 0 用满、元数据缺失不拦、窗口闸排在粘滞前；+2 集成：端到端拒绝与放行；+1 前端：设置页暴露该可调项）。

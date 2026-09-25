@@ -18,7 +18,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /** 构造一个够用的假 Cordis 上下文与宿主服务。 */
-function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, volatileConfig = false } = {}) {
+function createFakeHost(
+  configOverrides = {},
+  { apiKey, initiatorId, llmRoutes, llmContextWindows, volatileConfig = false } = {},
+) {
   const listeners = new Map();
   const effects = [];
   const registeredRoutes = new Map();
@@ -119,6 +122,8 @@ function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, 
       }
       if (name === 'credentials') return credentialsService;
       if (name === 'llm') {
+        const ctxWin = (provider, model) =>
+          llmContextWindows === undefined ? undefined : llmContextWindows[`${provider}::${model}`];
         // 真实宿主一定提供 llm：插件靠它问「这个路由支持哪些推理强度」，
         // 因为 DSH 对不支持的档位是硬拒绝（不做 clamping）。
         return {
@@ -129,11 +134,13 @@ function createFakeHost(configOverrides = {}, { apiKey, initiatorId, llmRoutes, 
                 throw new Error(`unknown route ${key}`);
               }
               const efforts = llmRoutes[key];
+              const win = ctxWin(provider, model);
               return {
                 provider,
                 id: model,
                 name: model,
                 reasoning: efforts === null ? undefined : { efforts: efforts.map((id) => ({ id, name: id })) },
+                ...(win === undefined ? {} : { context: { contextWindow: win } }),
               };
             }
             return {
@@ -1598,4 +1605,103 @@ test('回归：setConfig 不得把 volatile 引用替换成普通值', async () 
   assert.equal(typeof write, 'function');
   write('max');
   assert.equal(host.config.effort.get(), 'max', 'volatile 引用必须仍是活的：写回后 .get() 反映新值');
+});
+
+// ── 上下文窗口闸（端到端，由真实事故驱动）────────────────────
+test('回归：装不下当前会话的候选模型必须被拒绝（556K 会话 → 272K 模型）', async () => {
+  // 真实事故：本会话已累积 556K token，切到窗口 272K 的 gpt-5.6-luna，
+  // pi-ai 直接拒绝：CONTEXT_WINDOW_EXCEEDED。
+  const fetchStub = stubFetch({ jevBody: jevChoosing('small::gpt-5.6-luna') });
+  try {
+    const { host } = await mount(
+      {
+        modelRouting: true,
+        acknowledgeCacheRisk: true,
+        modelAllowlist: ['small::gpt-5.6-luna'],
+        customPricing: ['small::gpt-5.6-luna=0.2,0.2,1.2'],
+        stickyRounds: 1,
+        switchCooldown: 0,
+      },
+      {
+        apiKey: API_KEY,
+        initiatorId: 'ctx1',
+        llmRoutes: { 'small::gpt-5.6-luna': ['low', 'high'] },
+        // 目标模型只有 272K 窗口
+        llmContextWindows: { 'small::gpt-5.6-luna': 272000 },
+      },
+    );
+
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'ctx1' }, message: { content: '继续做长任务' } });
+
+    // 记一步「上下文已经很大」的历史：556K 的 prompt
+    const stream = await waterfall(host, 'llm/stream', { model: 'deepseek-v4-flash' }, () =>
+      (async function* () {
+        yield { type: 'usage', usage: { inputTokens: 556125, outputTokens: 500, cacheReadTokens: 0, reasoningTokens: 500 } };
+      })(),
+    );
+    for await (const _chunk of stream) { /* 消费 */ }
+
+    const result = await waterfall(
+      host,
+      'agent/request',
+      { agent: { id: 'ctx1' }, turn: 1, step: 1 },
+      async () => ({ provider: 'small', model: 'keep', reasoningEffort: 'high' }),
+    );
+
+    assert.notEqual(result.model, 'gpt-5.6-luna', '装不下就不能切过去（那会让请求必然失败）');
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(
+      fakeRequest({ method: 'GET', url: '/jev-router/status?session=ctx1' }),
+      res,
+    );
+    const body = JSON.parse(res.captured.body);
+    assert.equal(body.session.lastModelVerdict.reason, 'context-too-large');
+    assert.equal(body.session.lastModelVerdict.usedTokens, 556125);
+    assert.equal(body.session.lastModelVerdict.targetContextWindow, 272000);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('同一个大会话切到 1.05M 窗口的模型则允许（窗口差异决定成败）', async () => {
+  const fetchStub = stubFetch({ jevBody: jevChoosing('big::gpt-5.6-luna') });
+  try {
+    const { host } = await mount(
+      {
+        modelRouting: true,
+        acknowledgeCacheRisk: true,
+        modelAllowlist: ['big::gpt-5.6-luna'],
+        customPricing: ['big::gpt-5.6-luna=0.2,0.2,1.2'],
+        stickyRounds: 1,
+        switchCooldown: 0,
+      },
+      {
+        apiKey: API_KEY,
+        initiatorId: 'ctx2',
+        llmRoutes: { 'big::gpt-5.6-luna': ['low', 'high'] },
+        llmContextWindows: { 'big::gpt-5.6-luna': 1050000 },
+      },
+    );
+
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'ctx2' }, message: { content: '继续做长任务' } });
+
+    const stream = await waterfall(host, 'llm/stream', { model: 'deepseek-v4-flash' }, () =>
+      (async function* () {
+        yield { type: 'usage', usage: { inputTokens: 556125, outputTokens: 6000, cacheReadTokens: 0, reasoningTokens: 6000 } };
+      })(),
+    );
+    for await (const _chunk of stream) { /* 消费 */ }
+
+    const result = await waterfall(
+      host,
+      'agent/request',
+      { agent: { id: 'ctx2' }, turn: 1, step: 1 },
+      async () => ({ provider: 'big', model: 'keep', reasoningEffort: 'high' }),
+    );
+
+    assert.equal(result.model, 'gpt-5.6-luna', '1.05M 窗口装得下 556K，应当切换');
+  } finally {
+    fetchStub.restore();
+  }
 });

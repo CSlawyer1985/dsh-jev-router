@@ -17,6 +17,7 @@ const CONFIG = {
   downgradeStreak: 2,
   riskCeiling: 0.6,
   offFloorChars: 280,
+  contextSafetyMargin: 0.05,
   modelRouting: true,
   acknowledgeCacheRisk: true,
   modelSwitchMode: 'turn-boundary',
@@ -421,4 +422,105 @@ test('地板只抬 off，不影响 low/high/max', () => {
     });
     assert.equal(verdict.effort, d, `${d} 不应被地板改变`);
   }
+});
+
+// ── 上下文窗口闸（由真实事故驱动）────────────────────────────
+// 事故：已累积 556K token 的会话切到窗口 272K 的模型
+//       → pi-ai 直接拒绝：CONTEXT_WINDOW_EXCEEDED
+const SWITCH_BASE = {
+  candidateConfidence: 0.9,
+  atTurnStart: true,
+  prefixTokens: 1000,
+  pricing: { hit: 0.003, miss: 0.15, out: 0.6, period: 'offpeak' },
+  predictedOutputSavingTokens: 100000, // 让成本闸放行，隔离出窗口闸
+};
+
+function switchState() {
+  const st = createSessionState();
+  st.roundsSinceModelSwitch = Number.POSITIVE_INFINITY;
+  return st;
+}
+
+test('回归：装不下当前会话的模型必须被拒绝（真实 556K vs 272K 事故）', () => {
+  const verdict = shouldSwitchModel({
+    ...SWITCH_BASE,
+    state: switchState(),
+    config: CONFIG,
+    candidate: 'gpt-5.6-luna',
+    usedTokens: 556125,        // 实测值
+    targetContextWindow: 272000, // gpt-5.6-luna 经 openai-codex 的窗口
+  });
+  assert.equal(verdict.allow, false);
+  assert.equal(verdict.reason, 'context-too-large');
+  assert.equal(verdict.usedTokens, 556125);
+  assert.equal(verdict.targetContextWindow, 272000);
+  assert.ok(verdict.usableTokens < 272000, '应报告扣掉余量后的可用额度');
+});
+
+test('同一会话切到 1.05M 窗口的模型则放行（窗口差异是关键）', () => {
+  // 同一个 556K 会话：1.05M 窗口装得下，272K 装不下。
+  const state = switchState();
+  state.pendingModel = 'gpt-5.6-luna';
+  state.pendingModelStreak = CONFIG.stickyRounds - 1; // 让粘滞闸直接通过
+  const verdict = shouldSwitchModel({
+    ...SWITCH_BASE,
+    state,
+    config: CONFIG,
+    candidate: 'gpt-5.6-luna',
+    usedTokens: 556125,
+    targetContextWindow: 1050000,
+  });
+  assert.equal(verdict.allow, true, '1.05M 装得下，不该拦');
+});
+
+test('窗口余量生效：刚好卡在窗口边界也拒绝（留 5% 给增长）', () => {
+  const verdict = shouldSwitchModel({
+    ...SWITCH_BASE,
+    state: switchState(),
+    config: CONFIG,
+    candidate: 'm',
+    usedTokens: 270000,        // < 272000，但 > 272000×0.95 = 258400
+    targetContextWindow: 272000,
+  });
+  assert.equal(verdict.reason, 'context-too-large', '应扣掉 5% 余量再比');
+});
+
+test('余量设为 0 时用满窗口', () => {
+  const verdict = shouldSwitchModel({
+    ...SWITCH_BASE,
+    state: switchState(),
+    config: { ...CONFIG, contextSafetyMargin: 0 },
+    candidate: 'm',
+    usedTokens: 271000,
+    targetContextWindow: 272000,
+  });
+  assert.notEqual(verdict.reason, 'context-too-large', '余量 0 时 271000 < 272000 应放行');
+});
+
+test('窗口或用量缺失时不拦（元数据缺失不该永久禁用切换）', () => {
+  for (const args of [
+    { usedTokens: 556125, targetContextWindow: null },
+    { usedTokens: null, targetContextWindow: 272000 },
+    { usedTokens: 0, targetContextWindow: 272000 },
+  ]) {
+    const state = switchState();
+    state.pendingModel = 'm';
+    state.pendingModelStreak = CONFIG.stickyRounds - 1;
+    const verdict = shouldSwitchModel({ ...SWITCH_BASE, state, config: CONFIG, candidate: 'm', ...args });
+    assert.notEqual(verdict.reason, 'context-too-large', `不该因元数据缺失而拦：${JSON.stringify(args)}`);
+  }
+});
+
+test('窗口闸排在粘滞之前：被窗口拒绝的切换不得累积粘滞计数', () => {
+  const state = switchState();
+  shouldSwitchModel({
+    ...SWITCH_BASE,
+    state,
+    config: CONFIG,
+    candidate: 'gpt-5.6-luna',
+    usedTokens: 556125,
+    targetContextWindow: 272000,
+  });
+  assert.equal(state.pendingModelStreak, 0, '不可行的切换不该攒粘滞');
+  assert.equal(state.pendingModel, null);
 });
