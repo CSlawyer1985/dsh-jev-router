@@ -346,12 +346,23 @@ window.__ModuleLoader__.load({
             h("div", { style: S.metric }, h("div", { style: S.metricLabel }, "缓存命中 tokens"), h("div", { style: S.metricValue }, fmtNum(metrics.cacheReadTokens))),
             h("div", { style: S.metric }, h("div", { style: S.metricLabel }, "未命中 tokens"), h("div", { style: S.metricValue }, fmtNum(metrics.inputTokens))),
             h("div", { style: S.metric }, h("div", { style: S.metricLabel }, "缓存省下"), h("div", { style: S.metricValue }, fmtUsd(metrics.cacheSavingUsd))),
-            h("div", { style: S.metric }, h("div", { style: S.metricLabel }, "reasoning 占输出"), h("div", { style: S.metricValue }, fmtPct(metrics.reasoningShare))),
+            h(
+              "div",
+              { style: S.metric },
+              h("div", { style: S.metricLabel }, "reasoning 占输出"),
+              h(
+                "div",
+                { style: S.metricValue },
+                metrics.reasoningReported ? fmtPct(metrics.reasoningShare) : "未上报",
+              ),
+            ),
           ),
           h(
             "div",
             { style: S.hint },
-            "命中率 = 缓存命中 tokens ÷（命中 + 未命中）。DSH 把未命中的部分记为 inputTokens，命中的记为 cacheReadTokens。",
+            "命中率 = 缓存命中 tokens ÷（命中 + 未命中）。DSH 把未命中的部分记为 inputTokens，命中的记为 cacheReadTokens。" +
+              "reasoning 占比显示「未上报」时，表示当前 provider 没有在 usage 里返回 reasoningTokens——" +
+              "这是 provider 侧的行为，不是 0 次思考。",
           ),
         ),
 

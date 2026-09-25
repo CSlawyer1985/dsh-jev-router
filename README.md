@@ -372,6 +372,11 @@ $$\Delta_{out}\cdot 3P_{miss} \;>\; 0.967\,N\,P_{miss} \;\Longrightarrow\; \boxe
 
 命中率的时间形状（同一会话内连续 step）也值得注意：会话开头 1–2 步是冷启动（20% → 0%），随后爬到 97%+。**真正的缓存损失在会话边界与前缀重写，不在档位切换。**
 
+> **关于 `reasoning` 这一行的口径**：上面的数字来自会话日志（跨多个 DSH build）。
+> 但**当前 DSH build 里没有任何适配器填充 `reasoningTokens`**——DeepSeek、pi-ai、Anthropic/OpenAI 都不填（该字段只在 token-meter 类型与 UI 里被消费，没有生产者）。
+> 所以插件在设置页显示 **「未上报」而不是 0%**：provider 不上报不等于没有思考。
+> 这也意味着 **Tier B 的成本闸在当前 build 上拿不到「预测节省」，会一律以 `not-worth-it` 拒绝**——这是保守方向，符合「不确定就不动」。
+
 ### 缓存安全红线
 
 | 红线 | 实现 | 回归测试 |
@@ -518,11 +523,12 @@ dsh-jev-router/
 ├── scripts/
 │   ├── verify-install.sh    # 安装自检（13 项，含前端资产交付）
 │   ├── probe-frontend.mjs   # 前端启动探针（CDP + 无头 Chrome，覆盖"是否激活"）
+│   ├── try-jev.mjs          # Jev 判定评测：同一批消息喂给 Jev 与关键词表做对比
 │   └── rollback.sh          # 一键回滚（禁用插件 + 从备份恢复 patch）
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 135 项测试（10 个文件，分五层）
+├── test/                    # 138 项测试（10 个文件，分五层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -533,8 +539,28 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 135 项
+node --test test/*.test.js      # 138 项
+
+# 拿真实消息测 Jev 的判定质量（需要已配置 Key）
+node scripts/try-jev.mjs                    # 内置样例集
+node scripts/try-jev.mjs "你的消息" ...     # 自己的消息
+node scripts/try-jev.mjs --json             # 输出 JSON
 ```
+
+`try-jev.mjs` 会把同一批消息同时喂给 Jev 与关键词表，把差异直接摆出来。实测样例（8 条，实际版本 `jev-1.13.0`，中位耗时 426ms）：
+
+| 消息 | Jev | 关键词表 |
+|------|-----|---------|
+| 你好 | `off` (1.00) | off |
+| 今天几号？ | **`off`** (0.67) | high |
+| 把这段 JSON 格式化成两空格缩进 | **`low`** (0.84) | high |
+| 帮我彻底重构这个模块的架构… | `high` (0.65) | high |
+| 这段代码线上偶发超时…帮我定位根因 | `high` (0.99) | high |
+| ultrathink 一下这个一致性协议有没有漏洞 | `max` (0.64) | max |
+| **不要**完整全量思考，简单说就行 | **`low`** (0.99) | **max** |
+| **别** ultrathink，我只要一个是或否 | **`low`** (0.76) | **max** |
+
+不一致 4/8，且**每一条都是 Jev 对、关键词表错**。最后两条是否定句——关键词表看到「完整全量思考」「ultrathink」就判最高档，而用户的意思正好相反。这就是「语义判定」与「关键词匹配」的差别。
 
 ### 测试分层
 

@@ -87,3 +87,36 @@ test('窗口命中率与累计命中率是两件事（长上下文会主导累�
   assert.ok(stats.hitRate < 0.02, `累计命中率应被冷启动主导，实际 ${stats.hitRate}`);
   assert.ok(stats.windowHitRate > 0.98, `窗口命中率应为高位，实际 ${stats.windowHitRate}`);
 });
+
+// ── reasoningTokens 的上报与否 ──────────────────────────────
+test('回归：provider 不上报 reasoningTokens 时，占比必须是 null 而不是 0', () => {
+  // 实测：当前 DSH 版本里没有任何适配器填充 reasoningTokens。
+  // 若把「0」当成「没有思考」，界面会长期显示一个假的 0%。
+  const metrics = createMetrics();
+  recordUsage(metrics, { inputTokens: 100, cacheReadTokens: 900, outputTokens: 500 });
+  recordUsage(metrics, { inputTokens: 100, cacheReadTokens: 900, outputTokens: 500 });
+
+  const stats = snapshot(metrics, null);
+  assert.equal(stats.reasoningReported, false, '从未上报过 → 标志为 false');
+  assert.equal(stats.reasoningShare, null, '未上报时占比必须为 null，界面才能显示「未上报」');
+  assert.equal(stats.reasoningTokens, 0, '累计值仍是 0（它确实没被上报）');
+});
+
+test('provider 明确上报 0 时，与「不上报」要区分开', () => {
+  const metrics = createMetrics();
+  recordUsage(metrics, { inputTokens: 100, cacheReadTokens: 900, outputTokens: 500, reasoningTokens: 0 });
+
+  const stats = snapshot(metrics, null);
+  assert.equal(stats.reasoningReported, true, '字段存在（哪怕是 0）就算上报');
+  assert.equal(stats.reasoningShare, 0, '上报了 0 就该显示 0%');
+});
+
+test('一旦某次上报过，后续未带该字段的调用不会把标志打回去', () => {
+  const metrics = createMetrics();
+  recordUsage(metrics, { inputTokens: 10, cacheReadTokens: 90, outputTokens: 100, reasoningTokens: 40 });
+  recordUsage(metrics, { inputTokens: 10, cacheReadTokens: 90, outputTokens: 100 });
+
+  const stats = snapshot(metrics, null);
+  assert.equal(stats.reasoningReported, true);
+  assert.equal(stats.reasoningShare, 40 / 200);
+});

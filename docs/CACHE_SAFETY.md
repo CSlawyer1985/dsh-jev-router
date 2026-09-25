@@ -198,6 +198,20 @@ print(f'hit rate = {thit/(thit+tin)*100:.2f}%  ({thit:,} hit / {tin:,} miss)')
 
 ---
 
+## 7.5 关于 `reasoningTokens` 的口径（重要）
+
+本文件前面的实测基线里有一行「reasoning 占输出 40.5%」。这组数字来自会话日志（跨多个 DSH build），口径需要交代清楚：
+
+**当前 DSH build 里没有任何适配器填充 `reasoningTokens`。** 实测确认：DeepSeek 适配器源码里完全没有这个字段的映射；pi-ai / Anthropic SDK / OpenAI SDK 侧也没有。该字段只在 `dsh-token-meter` 的类型定义与若干 UI 组件里被**消费**，没有生产者。
+
+因此：
+
+- 插件在设置页把这一项显示为 **「未上报」而不是 0%**——provider 不上报不等于没有思考。
+- **Tier B 的成本闸在当前 build 上拿不到「预测节省」**（`predictOutputSaving` 依赖平均 reasoning token），会一律以 `not-worth-it` 拒绝。这是保守方向，与「不确定就不动」一致：宁可拒绝切换，也不基于缺失的数据做决策。
+- 若将来某个适配器开始上报该字段，插件会自动切回正常显示与计算——`metrics.reasoningReported` 一旦置位就不会回退。
+
+同时提醒：**缓存命中的计量不受影响**（`inputTokens` / `cacheReadTokens` 是正常上报的），所以第 2 节的 99.75% 命中率与第 5 节的盈亏平衡推导都成立。
+
 ## 8. 两个与缓存计量有关的实现细节
 
 ### 8.1 档位夹取可能反向推高开销
