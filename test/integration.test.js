@@ -1379,7 +1379,10 @@ test('生效档位必须同步进会话配置，否则原生「思考程度」�
   }
 });
 
-test('档位没变时不写会话配置（避免无谓的持久事件）', async () => {
+test('不变量：会话配置必须等于实际请求档位（首次建立基线，之后不重复写）', async () => {
+  // 不变量是「会话配置 == 实际请求档位」，而不是「本轮裁决 changed」。
+  // 首次请求时会话配置里还没有记录，因此**必须写一次**建立基线；
+  // 之后再请求同一档位就不该重复写（避免无谓的持久事件）。
   const fetchStub = stubFetch({ jevBody: jevWithEffort('high', 0.95, 0.1) });
   try {
     const { host } = await mount({}, { apiKey: API_KEY });
@@ -1388,13 +1391,45 @@ test('档位没变时不写会话配置（避免无谓的持久事件）', async
       id: 'sync-2',
       session: { append: (type, data) => appended.push({ type, data }) },
     };
+    const base = async () => ({ provider: 'p', model: 'm', reasoningEffort: 'high' });
 
     emit(host, 'agent/inbox/inserted', { agent, message: { content: '复杂任务' } });
-    await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({
-      provider: 'p', model: 'm', reasoningEffort: 'high',
-    }));
+    await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, base);
+    assert.equal(appended.length, 1, '首次必须建立基线，否则原生指示器无从判断');
 
-    assert.equal(appended.length, 0, 'already-there 不该写事件');
+    // 第二轮同档位：已经一致，不该再写
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '还是复杂任务' } });
+    await waterfall(host, 'agent/request', { agent, turn: 2, step: 1 }, base);
+    assert.equal(appended.length, 1, '档位未变时不得重复写');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('不变量：同轮后续 step 沿用档位时，会话配置也保持一致', async () => {
+  // 早先的漏洞：后续 step 走 entry.state.effort 这条路径，从不写会话配置，
+  // 于是原生指示器停在旧值上、与请求档位分叉。
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.95, 0.1) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const appended = [];
+    const agent = {
+      id: 'sync-steps',
+      session: { append: (type, data) => appended.push({ type, data }) },
+    };
+    const base = async () => ({ provider: 'p', model: 'm', reasoningEffort: 'high' });
+
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '简单问题' } });
+    const first = await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, base);
+    assert.equal(first.reasoningEffort, 'low');
+
+    // 同一轮的后续 step：沿用 low
+    const second = await waterfall(host, 'agent/request', { agent, turn: 1, step: 2 }, base);
+    assert.equal(second.reasoningEffort, 'low', '后续 step 应沿用');
+
+    const selections = appended.filter((e) => e.type === 'model/selection');
+    assert.equal(selections.length, 1, '后续 step 与已同步值一致，不该重复写');
+    assert.equal(selections[0].data.reasoningEffort, 'low', '会话配置必须等于请求档位');
   } finally {
     fetchStub.restore();
   }

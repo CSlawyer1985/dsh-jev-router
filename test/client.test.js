@@ -428,3 +428,20 @@ test('手动钉死档位时，徽章必须用 🔒 标出来（否则会被当�
   assert.match(src, /isManual \? "🔒 " : "⚡ "/, '徽章应区分手动与自动');
   assert.match(src, /manual-override/, '应识别 manual-override 裁决原因');
 });
+
+test('回归：showBadge=false 必须真的不渲染徽章（这个开关曾是死的）', () => {
+  // 真实缺陷：徽章无条件注册，`showBadge` 只在设置页的开关上被读、
+  // 从未参与判断，于是"关掉徽章"是个无效开关。
+  const src = stripComments(readFileSync(join(ROOT, 'client/client.js'), 'utf8'));
+  assert.match(src, /function BadgeIfEnabled/, '应存在按开关渲染的包装组件');
+  assert.match(
+    src,
+    /status\.config\.showBadge === false\) return null/,
+    'showBadge 为 false 时必须返回 null（不渲染）',
+  );
+  // 注册的渲染函数必须走包装组件，而不是直接渲染 JevBadge
+  const i = src.indexOf('{ id: "jev-router-badge"');
+  const block = src.slice(i, i + 200);
+  assert.match(block, /BadgeIfEnabled/, '注册处必须使用包装组件');
+  assert.ok(!/h\(JevBadge/.test(block), '注册处不得直接渲染 JevBadge（会绕过开关）');
+});

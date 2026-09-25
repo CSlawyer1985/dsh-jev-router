@@ -255,6 +255,18 @@ window.__ModuleLoader__.load({
     }
 
     // ── 输入框徽章 ───────────────────────────────────────────
+    /**
+     * 按 showBadge 决定是否渲染徽章。
+     *
+     * 自己取一次状态（不带 sessionId：这一步只关心全局配置，
+     * 不关心会话归属，所以走服务端兜底也无妨，读到的 showBadge 是一样的）。
+     */
+    function BadgeIfEnabled(props) {
+      const [status] = useStatus(15000, null);
+      if (status && status.config && status.config.showBadge === false) return null;
+      return h(JevBadge, props);
+    }
+
     function JevBadge(props) {
       // 槽位契约的 standardProps 里有 sessionId，本槽位是 session 作用域，
       // 因此徽章能精确知道自己属于哪个会话。
@@ -910,12 +922,20 @@ window.__ModuleLoader__.load({
           () => h(JevSection, null),
         );
 
+        // 徽章是否显示由 showBadge 决定。
+        //
+        // ⚠️ 早先这里无条件注册 —— `showBadge` 只在设置页的开关上被读，
+        // 从未参与判断，于是"关掉徽章"是个无效开关。
+        //
+        // 不能在这里直接读配置：静态 client 模块拿不到宿主配置，只能走 HTTP。
+        // 所以注册一个**自取状态**的包装组件：showBadge 为 false 时返回 null。
+        // 好处是设置里一改就生效（配置是 volatile 的），不需要重启或重建注册。
         mountSlot(
           slots,
           disposers,
           "conversation.input.left",
           { id: "jev-router-badge", order: 60, label: () => "Jev 档位" },
-          () => h(JevBadge, null),
+          (props) => h(BadgeIfEnabled, props),
         );
 
         if (typeof ctx.effect === "function") {
