@@ -203,11 +203,14 @@ async function waterfall(host, name, payload, produce) {
 }
 
 /** 假的 HTTP 请求：按需吐出 JSON body。 */
-function fakeRequest({ method = 'GET', body, headers = {} } = {}) {
+function fakeRequest({ method = 'GET', body, headers = {}, url } = {}) {
   const handlers = new Map();
   const request = {
     method,
     headers,
+    // 路由会读 request.url 上的 query（?session=<id>），桩必须把它带出来，
+    // 否则测试永远走 fallback 分支，测不出多会话串号。
+    url,
     on(event, handler) {
       if (!handlers.has(event)) handlers.set(event, []);
       handlers.get(event).push(handler);
@@ -256,7 +259,8 @@ function stubFetch({ jevBody, jevOk = true } = {}) {
         ok: jevOk,
         status: jevOk ? 200 : 500,
         headers: { get: () => null },
-        json: async () => jevBody,
+        // jevBody 可以是函数：按调用次序返回不同响应（模拟不同会话的判定）。
+        json: async () => (typeof jevBody === 'function' ? jevBody() : jevBody),
       };
     }
     throw new Error(`unexpected fetch: ${target}`);
@@ -267,12 +271,12 @@ function stubFetch({ jevBody, jevOk = true } = {}) {
 const API_KEY = 'test-typesafe-key';
 
 /** 构造一个指定档位的 Jev 响应（用于测降档的连续确认）。 */
-function jevWithEffort(effort, confidence = 0.9) {
+function jevWithEffort(effort, confidence = 0.9, risk = 1) {
   return {
     model: 'jev-1.13.0',
     answers: {
       effort: { type: 'choice', choice: effort, probabilities: { [effort]: confidence }, confidence },
-      risk: { type: 'score', score: 1, probabilities: {}, confidence: 0.9 },
+      risk: { type: 'score', score: risk, probabilities: {}, confidence: 0.9 },
       urgent: { type: 'noul', noul: 0.5 },
       model: { type: 'choice', choice: 'keep', probabilities: { keep: 1 }, confidence: 0.9 },
     },
@@ -1235,4 +1239,114 @@ test('回归：未配置 Key 时也要记录可区分的原因（而不是无声
   assert.equal(body.session.source, 'heuristic');
   assert.ok(body.diagnostics.jevFailure, '必须留下原因');
   assert.equal(body.diagnostics.jevFailure.kind, 'not-configured', '应能区分「未配置」与「请求失败」');
+});
+
+// ── 多会话下的状态定位（用户实际遇到：A 会话显示 B 会话的 off）──
+test('回归：?session= 必须精确定位到该会话，不能串到别的会话', async () => {
+  // 会话 A 的判定低风险（立即降档到 low），会话 B 的高风险（挂起，仍是 high）。
+  // 两者档位不同，才能证明 ?session= 真的按会话取数。
+  let call = 0;
+  const fetchStub = stubFetch({
+    jevBody: () => {
+      call += 1;
+      return call === 1 ? jevWithEffort('low', 0.95, 0.1) : jevWithEffort('off', 1, 2);
+    },
+  });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const base = async () => ({ provider: 'p', model: 'm', reasoningEffort: 'high' });
+
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'sess-A' }, message: { content: '随便问问' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'sess-A' }, turn: 1, step: 1 }, base);
+
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'sess-B' }, message: { content: '你好' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'sess-B' }, turn: 1, step: 1 }, base);
+
+    const route = host.registeredRoutes.get('/jev-router/status');
+    const read = async (url) => {
+      const res = fakeResponse();
+      await route.handler(fakeRequest({ method: 'GET', url }), res);
+      return JSON.parse(res.captured.body);
+    };
+
+    // 不带 session → 只能兜底，但必须**标明**是兜底
+    const fallback = await read('/jev-router/status');
+    assert.equal(fallback.session.scope, 'most-recent', '没有 session 参数时必须标明是兜底');
+
+    // 带 session=A → 精确返回 A（low），不能是最近活跃的 B（high）
+    const a = await read('/jev-router/status?session=sess-A');
+    assert.equal(a.session.scope, 'exact');
+    assert.equal(a.session.sessionKey, 'sess-A');
+    assert.equal(a.session.effort, 'low', 'A 会话是 low，不能被 B 覆盖');
+
+    const b = await read('/jev-router/status?session=sess-B');
+    assert.equal(b.session.scope, 'exact');
+    assert.equal(b.session.sessionKey, 'sess-B');
+    assert.equal(b.session.effort, 'high', 'B 会话高风险降档挂起，仍是 high');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('回归：两个会话的状态必须彼此独立（各自的确认计数互不影响）', async () => {
+  // 同一个判定（低档 + 高风险 → 需连续确认），A 走两轮、B 走一轮。
+  // 若状态串号，B 会跟着 A 一起降档。
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.95, 2) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const base = async () => ({ provider: 'p', model: 'm', reasoningEffort: 'high' });
+
+    for (const [id, turn] of [['A', 1], ['A', 2], ['B', 1]]) {
+      emit(host, 'agent/inbox/inserted', { agent: { id: 'iso-' + id }, message: { content: '问问' } });
+      await waterfall(host, 'agent/request', { agent: { id: 'iso-' + id }, turn, step: 1 }, base);
+    }
+
+    const route = host.registeredRoutes.get('/jev-router/status');
+    const read = async (q) => {
+      const res = fakeResponse();
+      await route.handler(fakeRequest({ method: 'GET', url: '/jev-router/status' + q }), res);
+      return JSON.parse(res.captured.body);
+    };
+
+    const a = await read('?session=iso-A');
+    const b = await read('?session=iso-B');
+
+    assert.equal(a.session.effort, 'low', 'A 走了两轮，应已降档');
+    assert.equal(b.session.effort, 'high', 'B 只走一轮，仍在挂起确认，不能受 A 影响');
+    assert.equal(b.session.lastEffortVerdict.reason, 'downgrade-pending');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('诊断：status 请求的会话定位统计（用于事后确认徽章有没有带 sessionId）', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.9, 0.1) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    emit(host, 'agent/inbox/inserted', { agent: { id: 'stat-1' }, message: { content: '问问' } });
+    await waterfall(host, 'agent/request', { agent: { id: 'stat-1' }, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+
+    const route = host.registeredRoutes.get('/jev-router/status');
+    const hit = async (url) => {
+      const res = fakeResponse();
+      await route.handler(fakeRequest({ method: 'GET', url }), res);
+      return JSON.parse(res.captured.body);
+    };
+
+    await hit('/jev-router/status');                          // 无 session
+    await hit('/jev-router/status?session=stat-1');            // 精确
+    await hit('/jev-router/status?session=nope');              // 找不到
+
+    const body = await hit('/jev-router/status?session=stat-1');
+    const st = body.diagnostics.statusRequests;
+    assert.equal(st.total, 4);
+    assert.equal(st.withSession, 3, '三次带了 session 参数');
+    assert.equal(st.exact, 2, '两次精确命中');
+    assert.equal(st.mostRecent, 1, '只有无参数那次走兜底');
+    assert.equal(st.noneScope, 1, '指定了不存在的 id → none，绝不用别的会话顶替');
+  } finally {
+    fetchStub.restore();
+  }
 });

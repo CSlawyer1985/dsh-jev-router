@@ -28,7 +28,14 @@ window.__ModuleLoader__.load({
     const inject = ["slots"];
 
     // ── Host 半的数据访问 ─────────────────────────────────────
-    async function fetchStatus() {
+    /**
+     * 取状态。
+     *
+     * @param {string|null} sessionId 会话作用域的调用方必须传自己的 sessionId：
+     *   不传时服务端只能回落到"最近活跃会话"，在多会话下会拿到**别的会话**的
+     *   档位——用户就会看到"A 会话显示成 B 会话的档位"。
+     */
+    async function fetchStatus(sessionId) {
       try {
         const response = await fetch(STATUS_URL, { cache: "no-store" });
         if (!response.ok) return null;
@@ -83,13 +90,13 @@ window.__ModuleLoader__.load({
     }
 
     /** 轮询状态；返回 [status, reload]。 */
-    function useStatus(intervalMs) {
+    function useStatus(intervalMs, sessionId) {
       const [status, setStatus] = React.useState(null);
       const [tick, setTick] = React.useState(0);
       React.useEffect(() => {
         let alive = true;
         const load = async () => {
-          const next = await fetchStatus();
+          const next = await fetchStatus(sessionId);
           if (alive && next) setStatus(next);
         };
         load();
@@ -98,7 +105,7 @@ window.__ModuleLoader__.load({
           alive = false;
           clearInterval(timer);
         };
-      }, [intervalMs, tick]);
+      }, [intervalMs, tick, sessionId]);
       return [status, () => setTick((value) => value + 1)];
     }
 
@@ -248,8 +255,30 @@ window.__ModuleLoader__.load({
     }
 
     // ── 输入框徽章 ───────────────────────────────────────────
-    function JevBadge() {
-      const [status, reload] = useStatus(4000);
+    function JevBadge(props) {
+      // 槽位契约的 standardProps 里有 sessionId，本槽位是 session 作用域，
+      // 因此徽章能精确知道自己属于哪个会话。
+      const sessionId = props && props.sessionId ? String(props.sessionId) : null;
+      const [status, reload] = useStatus(4000, sessionId);
+      // 只有 scope === 'exact' 才是**本会话**的数据。拿不到会话 id 时服务端只能给
+      // "最近活跃会话"，那可能是别的会话——宁可不显示，也不能显示错的档位。
+      const exact = Boolean(status && status.session && status.session.scope === "exact");
+      if (status && !exact) {
+        return h(
+          "button",
+          {
+            type: "button",
+            style: Object.assign({}, S.badge, { opacity: 0.5 }),
+            title: "Jev 路由：无法确定当前会话（槽位未提供 sessionId）\n点击可手动指定档位",
+            onClick: async () => {
+              const index = CYCLE.indexOf("auto");
+              await postConfig({ effort: CYCLE[(index + 1) % CYCLE.length] });
+              reload();
+            },
+          },
+          "⚡ ?",
+        );
+      }
       const effort = status && status.session ? status.session.effort || status.session.decided : null;
       const decided = status && status.session ? status.session.decided : null;
       const enabled = status && status.config ? status.config.enabled : true;
@@ -293,6 +322,16 @@ window.__ModuleLoader__.load({
       const [refreshing, setRefreshing] = React.useState(false);
       // 只暴露"有没有配"，不暴露任何 Key 内容。
       const credentialConfigured = Boolean(status && status.credential && status.credential.configured);
+      // 设置页是 root 作用域，拿不到 sessionId，服务端只能给"最近活跃会话"。
+      // 必须把它标出来，否则用户会以为这是"当前会话"的数字。
+      const sessionScope = status && status.session ? status.session.scope : null;
+      const sessionKey = status && status.session ? status.session.sessionKey : null;
+      const scopedLabel =
+        sessionScope === 'most-recent'
+          ? "最近活跃会话" + (sessionKey ? "（…" + sessionKey + "）" : "") + " · 非本页所属会话"
+          : sessionScope === 'exact'
+            ? "本会话"
+            : "无活跃会话";
 
       const config = (status && status.config) || {};
       const metrics = (status && status.metrics) || {};
@@ -491,6 +530,8 @@ window.__ModuleLoader__.load({
             h("span", { style: { fontSize: 13, fontWeight: 600 } }, session.effort || "harness 默认"),
             h("span", { style: { fontSize: 12, opacity: 0.7 } }, "Jev 判定：" + (session.decided || "—") + (session.confidence !== null && session.confidence !== undefined ? "（置信度 " + session.confidence + "）" : "")),
           ),
+          // 多会话下，设置页拿不到自己所属的会话，必须说清楚这些数字是谁的。
+          h("div", { style: S.hint }, "以上为「" + scopedLabel + "」的数据；输入框徽章显示的才是你当前会话的档位。"),
           h(
             "div",
             { style: S.row },

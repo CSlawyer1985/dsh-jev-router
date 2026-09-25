@@ -549,7 +549,7 @@ dsh-jev-router/
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 169 项测试（11 个文件，分六层）
+├── test/                    # 172 项测试（11 个文件，分六层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -560,7 +560,7 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 169 项
+node --test test/*.test.js      # 172 项
 
 # 拿真实消息测 Jev 的判定质量（需要已配置 Key）
 node scripts/try-jev.mjs                    # 内置样例集
@@ -681,6 +681,8 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 日期 | 版本 | 类型 | 要点 |
 |------|------|------|------|
 | 2026-09-25 | v0.1.0 | 初始发布 | Tier A 思考强度路由（迟滞 + 置信度门 + 关键词回退）+ Tier B 自动模型路由（五道闸 + 硬门禁 + 三步确认 + 回滚）+ `/jev` 命令族 + 设置页 + 徽章 + 署名 |
+| 2026-09-25 | v0.1.0 | 修复 | **多会话下徽章显示别的会话的档位**：状态接口只按 `agents.list()[0]` 或"最近活跃会话"定位，开了两个会话时会串号（用户在 A 会话看到 B 会话的 `off`，以为功能坏了）。改为前端传 `?session=<id>` 精确取数（槽位契约的 `standardProps` 提供 `sessionId`），并在拿不到会话时**宁可不显示**也不显示错的值 |
+| 2026-09-25 | v0.1.0 | 修复 | 指定了不存在的会话时**绝不用别的会话顶替**（返回 `scope: none`）；新增 `statusRequests` 诊断统计，用于事后确认徽章是否真的带上了会话 id |
 | 2026-09-25 | v0.1.0 | 修复 | **判定超时默认值过紧导致重启后首次判定静默降级**：实测冷启动 1367–1463ms、热调用 358–548ms，而默认 `timeoutMs` 是 1500ms——正好卡在两者之间，于是每次重启后第一条消息都超时走关键词回退。默认改为 4000ms |
 | 2026-09-25 | v0.1.0 | 修复 | **判定失败是静默的**（无日志、无痕迹）→ 新增 `jevFailure` 诊断字段与告警日志，并区分 `not-configured` / `timeout` / `http` / `network` / `parse`，界面能直接告诉你该去配 Key 还是调超时 |
 | 2026-09-25 | v0.1.0 | 修复 | **设置页只有 4 个可调项**（其余配置项在插件页里根本不存在）→ `status.config` 改为公开全部可调字段的已解析值；设置页补齐判定时机 / 模型路由参数 / 回退档位等全部调参项 |

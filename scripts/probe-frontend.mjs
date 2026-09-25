@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function findPageTarget() {
   for (let i = 0; i < 60; i += 1) {
     try {
-      const targets = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json`)).json();
+      const targets = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
       const page = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
       if (page) return page;
     } catch {
@@ -56,6 +56,8 @@ class Cdp {
     this.consoleMessages = [];
     this.exceptions = [];
     this.logEntries = [];
+    // 发往本插件的请求：用于验证徽章是否带上了 ?session=
+    this.pluginRequests = [];
     ws.addEventListener('message', (event) => {
       let msg;
       try {
@@ -80,6 +82,9 @@ class Cdp {
         this.exceptions.push({
           text: d.exception?.description ?? d.text ?? '(no description)',
         });
+      } else if (msg.method === 'Network.requestWillBeSent') {
+        const url = msg.params?.request?.url ?? '';
+        if (url.includes('/jev-router/')) this.pluginRequests.push(url);
       } else if (msg.method === 'Log.entryAdded') {
         const e = msg.params.entry ?? {};
         this.logEntries.push({ level: e.level, text: e.text ?? '' });
@@ -113,6 +118,7 @@ const cdp = new Cdp(ws);
 await cdp.send('Runtime.enable');
 await cdp.send('Log.enable');
 await cdp.send('Page.enable');
+await cdp.send('Network.enable');
 await cdp.send('Page.navigate', { url: URL_TO_LOAD });
 await sleep(WAIT_MS);
 
@@ -144,6 +150,7 @@ const payload = {
   probe,
   consoleErrors: cdp.consoleMessages.filter((m) => m.level === 'error').slice(0, 20),
   exceptions: cdp.exceptions.slice(0, 10),
+  statusRequests: cdp.pluginRequests.filter((u) => u.includes('/jev-router/status')),
   logErrors: cdp.logEntries.filter((e) => e.level === 'error').slice(0, 20),
 };
 
