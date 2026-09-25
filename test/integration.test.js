@@ -1350,3 +1350,104 @@ test('诊断：status 请求的会话定位统计（用于事后确认徽章有�
     fetchStub.restore();
   }
 });
+
+// ── 档位同步进会话配置（让 DSH 原生指示器跟随）──────────────
+test('生效档位必须同步进会话配置，否则原生「思考程度」永远不动', async () => {
+  // Tier A 只改单次调用的 reasoningEffort；DSH 原生的档位显示读的是**会话配置**。
+  // 不同步的话，界面永远停在会话设置上 —— 用户看不到插件在工作。
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.95, 0.1) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const appended = [];
+    const agent = {
+      id: 'sync-1',
+      session: { append: (type, data) => appended.push({ type, data }) },
+    };
+
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '把 JSON 格式化一下' } });
+    await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({
+      provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high',
+    }));
+
+    const selection = appended.find((e) => e.type === 'model/selection');
+    assert.ok(selection, '必须追加 model/selection，否则原生界面不知道档位变了');
+    assert.equal(selection.data.reasoningEffort, 'low');
+    assert.equal(selection.data.provider, 'deepseek-official');
+    assert.equal(selection.data.model, 'deepseek-v4-flash', 'provider/model 是必填字段');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('档位没变时不写会话配置（避免无谓的持久事件）', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('high', 0.95, 0.1) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const appended = [];
+    const agent = {
+      id: 'sync-2',
+      session: { append: (type, data) => appended.push({ type, data }) },
+    };
+
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '复杂任务' } });
+    await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+
+    assert.equal(appended.length, 0, 'already-there 不该写事件');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('syncSessionEffort=false 时完全不同步（尊重不写会话配置的偏好）', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.95, 0.1) });
+  try {
+    const { host } = await mount({ syncSessionEffort: false }, { apiKey: API_KEY });
+    const appended = [];
+    const agent = {
+      id: 'sync-3',
+      session: { append: (type, data) => appended.push({ type, data }) },
+    };
+
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '简单问题' } });
+    const cfg = await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+
+    assert.equal(cfg.reasoningEffort, 'low', '请求本身仍然改档位');
+    assert.equal(appended.length, 0, '但不得写会话配置');
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test('同步失败必须留痕，不能静默', async () => {
+  const fetchStub = stubFetch({ jevBody: jevWithEffort('low', 0.95, 0.1) });
+  try {
+    const { host } = await mount({}, { apiKey: API_KEY });
+    const agent = {
+      id: 'sync-fail',
+      session: {
+        append: () => {
+          throw new Error('session is detached');
+        },
+      },
+    };
+
+    emit(host, 'agent/inbox/inserted', { agent, message: { content: '简单问题' } });
+    await waterfall(host, 'agent/request', { agent, turn: 1, step: 1 }, async () => ({
+      provider: 'p', model: 'm', reasoningEffort: 'high',
+    }));
+
+    const res = fakeResponse();
+    await host.registeredRoutes.get('/jev-router/status').handler(
+      fakeRequest({ method: 'GET', url: '/jev-router/status?session=sync-fail' }),
+      res,
+    );
+    const body = JSON.parse(res.captured.body);
+    assert.equal(body.diagnostics.effortSyncFailure, 'session is detached');
+  } finally {
+    fetchStub.restore();
+  }
+});

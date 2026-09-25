@@ -416,6 +416,7 @@ outputTokens     =     532,830
 | `hysteresisRounds` | `2` | 迟滞窗口（轮） |
 | `downgradeStreak` | `2` | 降档需连续确认轮数。**只作用于高错误代价的降档**；低代价与关键词回退立即生效 |
 | `riskCeiling` | `0.6` | 「低错误代价」上界（Jev 的 risk 分 0–3）。risk 不超过此值的降档立即生效 |
+| `syncSessionEffort` | `true` | 把生效档位同步进**会话配置**（写 `model/selection`），让 DSH 原生的「模型后面的思考程度」跟随。关掉则原生界面永远停在会话设置上 |
 
 > **全部可调项都在插件的设置页上**（设置 → 插件 → Jev 路由），不必去 DSH 的通用设置里找。`status.config` 会公开全部可调字段的**已解析值**，所以新增配置项会自动出现在页面上。
 | `timeoutMs` | `4000` | 单次判定超时；超时即回退，绝不阻塞用户请求。**不要按热调用中位数设**——实测冷启动 1367–1463ms、热调用 358–548ms，卡在中间会导致重启后首次判定必然超时 |
@@ -549,7 +550,7 @@ dsh-jev-router/
 ├── docs/
 │   ├── CACHE_SAFETY.md      # 缓存安全设计：实测基线、源码证据、盈亏平衡推导、A/B 方案
 │   └── DEVELOPMENT_PLAN.md  # 开发规划、逐条缺陷记录、验证方法
-├── test/                    # 174 项测试（11 个文件，分六层）
+├── test/                    # 178 项测试（11 个文件，分六层）
 ├── cordis.patch.yml         # bundle patch（loader 挂载行）
 ├── package.json             # dsh.bundle.patch + dsh.client 声明
 └── README.md
@@ -560,7 +561,7 @@ dsh-jev-router/
 ## 测试与验证
 
 ```bash
-node --test test/*.test.js      # 174 项
+node --test test/*.test.js      # 178 项
 
 # 拿真实消息测 Jev 的判定质量（需要已配置 Key）
 node scripts/try-jev.mjs                    # 内置样例集
@@ -681,6 +682,7 @@ Object.freeze({ get: () => current, [write]: (v) => { current = v } })
 | 日期 | 版本 | 类型 | 要点 |
 |------|------|------|------|
 | 2026-09-25 | v0.1.0 | 初始发布 | Tier A 思考强度路由（迟滞 + 置信度门 + 关键词回退）+ Tier B 自动模型路由（五道闸 + 硬门禁 + 三步确认 + 回滚）+ `/jev` 命令族 + 设置页 + 徽章 + 署名 |
+| 2026-09-25 | v0.1.0 | 修复 | **DSH 原生档位指示器永不跟随**：Tier A 只改单次调用的 `reasoningEffort`，而原生「模型后面的思考程度」读的是**会话配置**——所以界面永远停在会话设置上，用户完全看不到插件在工作。新增 `syncSessionEffort`（默认开）：档位变化时追加 `model/selection`（内置选择器走的同一条通道，字段规范 `disposition(["provider","model"], ["reasoningEffort"])`），原生界面随之更新。同步失败会记录到诊断，不静默 |
 | 2026-09-25 | v0.1.0 | 修复 | **占位徽章有写全局配置的副作用**：会话未就绪时显示 `⚡ ?` 的那个按钮，其 `onClick` 会把**全局**手动档位从 `auto` **改成下一档**（通常是 `off`）。点一下就让所有会话进入 `manual-override`、Jev 判定被完全绕过，现象是「思考强度完全不变化」。占位符改为 `disabled` 且**绝不带 onClick** |
 | 2026-09-25 | v0.1.0 | 体验 | 手动档位时徽章用 **🔒** 区分（自动为 ⚡），并在 title 里说明「Jev 自动判定已被绕过；点一下回到 auto」；点击语义改为**手动时一次点击直接回 auto**，不再继续往下降档 |
 | 2026-09-25 | v0.1.0 | 修复 | **多会话下徽章显示别的会话的档位**：状态接口只按 `agents.list()[0]` 或"最近活跃会话"定位，开了两个会话时会串号（用户在 A 会话看到 B 会话的 `off`，以为功能坏了）。改为前端传 `?session=<id>` 精确取数（槽位契约的 `standardProps` 提供 `sessionId`），并在拿不到会话时**宁可不显示**也不显示错的值 |
